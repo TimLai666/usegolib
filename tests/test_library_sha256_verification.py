@@ -8,10 +8,23 @@ import pytest
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
+def _ext(goos: str) -> str:
+    if goos == "windows":
+        return ".dll"
+    if goos == "darwin":
+        return ".dylib"
+    return ".so"
+
 
 def _write_manifest(tmp_path: Path, *, sha: str | None) -> Path:
+    from usegolib.runtime.platform import host_goarch, host_goos
+
+    goos = host_goos()
+    goarch = host_goarch()
+    ext = _ext(goos)
+
     lib_bytes = b"not a real shared library"
-    lib_path = tmp_path / "libusegolib.so"
+    lib_path = tmp_path / f"libusegolib{ext}"
     lib_path.write_bytes(lib_bytes)
 
     manifest = {
@@ -19,8 +32,8 @@ def _write_manifest(tmp_path: Path, *, sha: str | None) -> Path:
         "abi_version": 0,
         "module": "example.com/mod",
         "version": "v0.0.0",
-        "goos": "linux",
-        "goarch": "amd64",
+        "goos": goos,
+        "goarch": goarch,
         "packages": ["example.com/mod"],
         "symbols": [],
         "schema": None,
@@ -89,6 +102,8 @@ def test_load_artifact_accepts_correct_sha256(tmp_path: Path, monkeypatch: pytes
     import usegolib.handle
     import usegolib
 
+    from usegolib.runtime.platform import host_goos
+
     created = {"path": None}
 
     class DummyClient:
@@ -102,7 +117,7 @@ def test_load_artifact_accepts_correct_sha256(tmp_path: Path, monkeypatch: pytes
     leaf = _write_manifest(tmp_path, sha=want)
 
     # Ensure the file bytes match what we hashed.
-    (leaf / "libusegolib.so").write_bytes(lib_bytes)
+    (leaf / f"libusegolib{_ext(host_goos())}").write_bytes(lib_bytes)
 
     h = usegolib.load_artifact(leaf)
     assert h.module == "example.com/mod"

@@ -22,6 +22,7 @@ from .errors import (
 )
 from .runtime.cbridge import SharedLibClient
 from .schema import Schema, validate_call_args, validate_call_result
+from .runtime.platform import host_goarch, host_goos
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,13 @@ def _sha256_file(path) -> str:
 
 
 def _verify_library_sha256(manifest: ArtifactManifest) -> None:
+    goos = host_goos()
+    goarch = host_goarch()
+    if manifest.goos != goos or manifest.goarch != goarch:
+        raise LoadError(
+            f"artifact platform mismatch: manifest {manifest.goos}/{manifest.goarch}, host {goos}/{goarch}"
+        )
+
     want = (manifest.library_sha256 or "").strip()
     if not want:
         raise LoadError("manifest missing library.sha256")

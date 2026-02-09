@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .errors import AmbiguousArtifactError, ArtifactNotFoundError
+from .errors import AmbiguousArtifactError, ArtifactNotFoundError, LoadError
 from .runtime.platform import host_goarch, host_goos
 
 
@@ -35,7 +35,22 @@ def read_manifest(path_or_dir: Path) -> ArtifactManifest:
     if not manifest_path.exists():
         raise ArtifactNotFoundError(f"manifest.json not found at {manifest_path}")
 
-    obj = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        obj = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 - boundary parse
+        raise LoadError(f"failed to parse manifest.json: {e}") from e
+
+    try:
+        manifest_version = int(obj["manifest_version"])
+        abi_version = int(obj["abi_version"])
+    except Exception as e:  # noqa: BLE001 - boundary parse
+        raise LoadError(f"invalid manifest version fields: {e}") from e
+
+    if manifest_version != 1:
+        raise LoadError(f"unsupported manifest_version: {manifest_version}")
+    if abi_version != 0:
+        raise LoadError(f"unsupported abi_version: {abi_version}")
+
     lib = obj.get("library") or {}
     schema = obj.get("schema")
     if not isinstance(schema, dict):
@@ -44,9 +59,10 @@ def read_manifest(path_or_dir: Path) -> ArtifactManifest:
     if not lib_path.is_absolute():
         lib_path = manifest_path.parent / lib_path
 
-    return ArtifactManifest(
-        manifest_version=int(obj["manifest_version"]),
-        abi_version=int(obj["abi_version"]),
+    try:
+        return ArtifactManifest(
+        manifest_version=manifest_version,
+        abi_version=abi_version,
         module=str(obj["module"]),
         version=str(obj["version"]),
         goos=str(obj["goos"]),
@@ -57,6 +73,8 @@ def read_manifest(path_or_dir: Path) -> ArtifactManifest:
         library_path=lib_path,
         library_sha256=str(lib.get("sha256", "")),
     )
+    except Exception as e:  # noqa: BLE001 - boundary parse
+        raise LoadError(f"invalid manifest.json schema: {e}") from e
 
 
 def load_artifact(path_or_dir: str | Path):

@@ -5,9 +5,18 @@ from pathlib import Path
 
 def test_load_artifact_reads_manifest(tmp_path: Path):
     import usegolib
+    from usegolib.runtime.platform import host_goarch, host_goos
+
+    goos = host_goos()
+    goarch = host_goarch()
+    ext = ".so"
+    if goos == "windows":
+        ext = ".dll"
+    elif goos == "darwin":
+        ext = ".dylib"
 
     lib_bytes = b""
-    lib_path = tmp_path / "libusegolib.dll"
+    lib_path = tmp_path / f"libusegolib{ext}"
     lib_path.write_bytes(lib_bytes)
     sha = hashlib.sha256(lib_bytes).hexdigest()
 
@@ -16,11 +25,11 @@ def test_load_artifact_reads_manifest(tmp_path: Path):
         "abi_version": 0,
         "module": "example.com/mod",
         "version": "v1.2.3",
-        "goos": "windows",
-        "goarch": "amd64",
+        "goos": goos,
+        "goarch": goarch,
         "packages": ["example.com/mod"],
         "symbols": [],
-        "library": {"path": "libusegolib.dll", "sha256": sha},
+        "library": {"path": lib_path.name, "sha256": sha},
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 

@@ -4,9 +4,19 @@ from pathlib import Path
 
 
 def _write_manifest(dirpath: Path, module: str, version: str) -> None:
+    from usegolib.runtime.platform import host_goarch, host_goos
+
+    goos = host_goos()
+    goarch = host_goarch()
+    ext = ".so"
+    if goos == "windows":
+        ext = ".dll"
+    elif goos == "darwin":
+        ext = ".dylib"
+
     lib_bytes = b""
-    lib_path = dirpath / "libusegolib.dll"
     dirpath.mkdir(parents=True, exist_ok=True)
+    lib_path = dirpath / f"libusegolib{ext}"
     lib_path.write_bytes(lib_bytes)
     sha = hashlib.sha256(lib_bytes).hexdigest()
 
@@ -15,11 +25,11 @@ def _write_manifest(dirpath: Path, module: str, version: str) -> None:
         "abi_version": 0,
         "module": module,
         "version": version,
-        "goos": "windows",
-        "goarch": "amd64",
+        "goos": goos,
+        "goarch": goarch,
         "packages": [module],
         "symbols": [],
-        "library": {"path": "libusegolib.dll", "sha256": sha},
+        "library": {"path": lib_path.name, "sha256": sha},
     }
     (dirpath / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
