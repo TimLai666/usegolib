@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import shutil
 
 
 def _write_go_test_module(mod_dir: Path) -> None:
@@ -37,6 +38,17 @@ def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
+
+def _create_venv(venv_dir: Path) -> None:
+    try:
+        subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
+        return
+    except subprocess.CalledProcessError:
+        if os.name == "nt":
+            raise
+        if shutil.which("uv") is None:
+            pytest.skip("python -m venv failed and `uv` is not available on PATH")
+        subprocess.check_call(["uv", "venv", "-c", "--seed", str(venv_dir)])
 
 
 def _runtime_env_without_go(base_env: dict[str, str]) -> dict[str, str]:
@@ -95,7 +107,7 @@ def test_generated_wheel_installs_and_runs_without_go_on_path(tmp_path: Path):
     dist_dir.mkdir(parents=True, exist_ok=True)
 
     build_venv = tmp_path / "venv_build"
-    subprocess.check_call([sys.executable, "-m", "venv", str(build_venv)])
+    _create_venv(build_venv)
     bpy = _venv_python(build_venv)
 
     # Build environment: install usegolib + build wheel for generated project.
@@ -111,7 +123,7 @@ def test_generated_wheel_installs_and_runs_without_go_on_path(tmp_path: Path):
     wheel_path = wheels[0]
 
     run_venv = tmp_path / "venv_run"
-    subprocess.check_call([sys.executable, "-m", "venv", str(run_venv)])
+    _create_venv(run_venv)
     rpy = _venv_python(run_venv)
 
     # Runtime environment: install usegolib runtime + install wheel.

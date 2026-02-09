@@ -9,12 +9,25 @@ def _write_manifest(
     *,
     module: str,
     version: str,
-    goos: str = "windows",
-    goarch: str = "amd64",
+    goos: str | None = None,
+    goarch: str | None = None,
     packages: list[str] | None = None,
 ) -> None:
+    from usegolib.runtime.platform import host_goarch, host_goos
+
+    if goos is None:
+        goos = host_goos()
+    if goarch is None:
+        goarch = host_goarch()
+
     if packages is None:
         packages = [module]
+
+    ext = ".so"
+    if goos == "windows":
+        ext = ".dll"
+    elif goos == "darwin":
+        ext = ".dylib"
     manifest = {
         "manifest_version": 1,
         "abi_version": 0,
@@ -24,7 +37,7 @@ def _write_manifest(
         "goarch": goarch,
         "packages": packages,
         "symbols": [],
-        "library": {"path": "libusegolib.dll", "sha256": "00" * 32},
+        "library": {"path": f"libusegolib{ext}", "sha256": "00" * 32},
     }
     dirpath.mkdir(parents=True, exist_ok=True)
     (dirpath / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -64,4 +77,3 @@ def test_import_subpackage_binds_package(tmp_path: Path):
 
     h = usegolib.import_("example.com/mod/subpkg", version="v1.0.0", artifact_dir=tmp_path)
     assert h.package == "example.com/mod/subpkg"
-

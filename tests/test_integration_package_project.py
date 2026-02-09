@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import shutil
 
 
 def _write_go_test_module(mod_dir: Path) -> None:
@@ -37,6 +38,21 @@ def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
+
+def _create_venv(venv_dir: Path) -> None:
+    try:
+        subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
+        return
+    except subprocess.CalledProcessError:
+        # Some minimal Linux installs (including some WSL images) do not ship
+        # ensurepip/python3-venv, making `python -m venv` unusable.
+        if os.name == "nt":
+            raise
+        if shutil.which("uv") is None:
+            pytest.skip("python -m venv failed and `uv` is not available on PATH")
+        # `python -m venv` may have created the directory before failing. `uv venv -c`
+        # will replace it. `--seed` ensures `pip` exists for subsequent installs.
+        subprocess.check_call(["uv", "venv", "-c", "--seed", str(venv_dir)])
 
 
 @pytest.mark.skipif(
@@ -72,7 +88,7 @@ def test_package_generates_installable_project(tmp_path: Path):
     assert (proj_dir / "pyproject.toml").exists()
 
     venv_dir = tmp_path / "venv"
-    subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
+    _create_venv(venv_dir)
     vpy = _venv_python(venv_dir)
 
     # Install usegolib (this repo) and then the generated package.
@@ -84,4 +100,3 @@ def test_package_generates_installable_project(tmp_path: Path):
         text=True,
     ).strip()
     assert out == "3"
-
