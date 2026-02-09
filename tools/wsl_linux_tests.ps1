@@ -70,6 +70,11 @@ set -euo pipefail
 cd "$repoWsl"
 $Python -V
 
+# Pin Zig version for parity with CI (optional).
+if [ -z "`${USEGOLIB_ZIG_VERSION:-}" ] && [ -f "$repoWsl/tools/zig-version.txt" ]; then
+  export USEGOLIB_ZIG_VERSION="`$(tr -d '\\r\\n' < "$repoWsl/tools/zig-version.txt")"
+fi
+
 # Bootstrap Go toolchain without sudo (needed for integration tests).
 if ! command -v go >/dev/null 2>&1; then
   GO_VERSION="`${USEGOLIB_WSL_GO_VERSION:-}"
@@ -111,7 +116,7 @@ if ! command -v uv >/dev/null 2>&1; then
   export PATH="`$HOME/.local/bin:`$PATH"
 fi
 
-uv venv "$venv"
+uv venv -c "$venv"
 uv pip install --python "$venv/bin/python" -e ".[dev]"
 $envLine "$venv/bin/python" -m pytest -q
 "@
@@ -128,7 +133,7 @@ if ! command -v uv >/dev/null 2>&1; then
   export PATH="`$HOME/.local/bin:`$PATH"
 fi
 
-uv venv "$venv"
+uv venv -c "$venv"
 uv pip install --python "$venv/bin/python" -e ".[dev]"
 "$venv/bin/python" -m pytest -q
 "@

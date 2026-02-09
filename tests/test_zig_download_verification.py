@@ -25,6 +25,7 @@ def _zip_bytes(files: dict[str, bytes]) -> bytes:
 
 def test_ensure_zig_verifies_sha256(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import usegolib.builder.zig as zig
+    monkeypatch.delenv("USEGOLIB_ZIG_VERSION", raising=False)
 
     # Make deterministic.
     monkeypatch.setattr(zig, "_cache_dir", lambda: tmp_path)
@@ -58,6 +59,7 @@ def test_ensure_zig_verifies_sha256(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 def test_ensure_zig_rejects_sha256_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import usegolib.builder.zig as zig
+    monkeypatch.delenv("USEGOLIB_ZIG_VERSION", raising=False)
 
     monkeypatch.setattr(zig, "_cache_dir", lambda: tmp_path)
     monkeypatch.setattr(zig, "_pick_latest_stable_version", lambda _index: "0.0.0")
@@ -85,6 +87,7 @@ def test_ensure_zig_rejects_sha256_mismatch(tmp_path: Path, monkeypatch: pytest.
 
 def test_ensure_zig_rejects_unsafe_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import usegolib.builder.zig as zig
+    monkeypatch.delenv("USEGOLIB_ZIG_VERSION", raising=False)
 
     monkeypatch.setattr(zig, "_cache_dir", lambda: tmp_path)
     monkeypatch.setattr(zig, "_pick_latest_stable_version", lambda _index: "0.0.0")
@@ -111,4 +114,3 @@ def test_ensure_zig_rejects_unsafe_paths(tmp_path: Path, monkeypatch: pytest.Mon
 
     with pytest.raises(zig.BuildError, match=r"unsafe path"):
         zig.ensure_zig()
-

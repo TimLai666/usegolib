@@ -57,6 +57,13 @@ jobs:
           v="$(tr -d '\r\n' < tools/go-version.txt)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      - name: Read Zig Version
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="$(tr -d '\r\n' < tools/zig-version.txt)"
+          echo "USEGOLIB_ZIG_VERSION=$v" >> "$GITHUB_ENV"
+
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ steps.go_version.outputs.version }}
@@ -79,7 +86,7 @@ jobs:
           path: |
             ~/.cache/usegolib
             %LocalAppData%\usegolib
-          key: ${{ runner.os }}-zig-${{ hashFiles('pyproject.toml') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('pyproject.toml', 'tools/zig-version.txt') }}
           restore-keys: |
             ${{ runner.os }}-zig-
 

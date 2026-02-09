@@ -48,7 +48,15 @@ def ensure_zig() -> Path:
     except Exception as e:  # noqa: BLE001
         raise BuildError(f"failed to fetch Zig download index: {e}") from e
 
-    version = _pick_latest_stable_version(index)
+    pinned_version = os.environ.get("USEGOLIB_ZIG_VERSION")
+    if pinned_version:
+        version = pinned_version.strip()
+        if version.startswith("v"):
+            version = version[1:]
+        if version not in index:
+            raise BuildError(f"Zig index missing version: {version}")
+    else:
+        version = _pick_latest_stable_version(index)
     target = _zig_target()
     try:
         entry = index[version][target]

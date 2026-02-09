@@ -47,6 +47,7 @@ Advanced overrides:
 
 Pinned default:
 - If `tools/go-version.txt` exists, the WSL runner uses it as the default Go version for integration runs.
+- If `tools/zig-version.txt` exists, the WSL runner sets `USEGOLIB_ZIG_VERSION` during integration runs for parity with CI.
 
 By default the script targets the `Ubuntu` WSL distro. To run on a different distro:
 
