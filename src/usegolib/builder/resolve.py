@@ -19,13 +19,14 @@ class ResolvedModule:
 def resolve_module_target(*, target: str, version: str | None) -> ResolvedModule:
     """Resolve a builder target to a local module directory and concrete version.
 
-    - If `target` is a local directory, parse its go.mod and return version "local".
+    - If `target` is a local directory, locate the nearest parent containing go.mod
+      (allows passing a subdirectory of a module) and return version "local".
     - Otherwise treat `target` as a Go import path (module or package path) and use
       `go mod download -json` to resolve module root and version (defaults to @latest).
     """
     p = Path(target)
     if p.exists() and p.is_dir():
-        module_dir = p.resolve()
+        module_dir = _find_module_root(p.resolve())
         module_path = _read_module_path(module_dir)
         return ResolvedModule(module_path=module_path, version="local", module_dir=module_dir)
 
@@ -43,6 +44,17 @@ def _read_module_path(module_dir: Path) -> str:
         if line.startswith("module "):
             return line.split()[1]
     raise BuildError("failed to parse module path from go.mod")
+
+
+def _find_module_root(start: Path) -> Path:
+    p = start
+    while True:
+        if (p / "go.mod").exists():
+            return p
+        if p.parent == p:
+            break
+        p = p.parent
+    raise BuildError(f"go.mod not found in {start} or any parent directory")
 
 
 def _resolve_remote_module(*, import_path: str, wanted: str) -> tuple[str, str, Path]:
@@ -80,4 +92,3 @@ def _go_mod_download_json(arg: str) -> dict:
             return json.loads(proc.stdout)
         except Exception as e:  # noqa: BLE001
             raise BuildError(f"failed to parse go mod download output for {arg}: {e}") from e
-

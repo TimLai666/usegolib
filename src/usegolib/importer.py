@@ -12,31 +12,48 @@ def import_(
     version: str | None = None,
     *,
     artifact_dir: str | Path | None = None,
-    build_if_missing: bool = False,
+    build_if_missing: bool | None = None,
 ):
     """Import a Go module by loading a prebuilt artifact.
 
-    By default, this function requires a prebuilt artifact to exist on disk.
-    In development workflows, `build_if_missing=True` can be used to build into
-    `artifact_dir` and then import the newly built artifact.
+    If `artifact_dir` is omitted, a default artifact root is used.
+
+    `build_if_missing` is tri-state:
+    - True: build missing artifacts into the selected artifact root.
+    - False: never build; missing artifacts raise ArtifactNotFoundError.
+    - None (auto): build only when `artifact_dir` is omitted.
     """
     from .artifact import resolve_manifest
     from .handle import PackageHandle
+    from .paths import default_artifact_root
 
-    if artifact_dir is None:
-        raise ArtifactNotFoundError("artifact_dir is required in v0 runtime mode")
+    auto_root = artifact_dir is None
+    artifact_root = Path(artifact_dir) if artifact_dir is not None else default_artifact_root()
+    artifact_root.mkdir(parents=True, exist_ok=True)
+
+    if build_if_missing is None:
+        build_if_missing = auto_root
 
     # Convenience for dev: allow passing a local module directory path.
-    # When `module` is a directory, resolve its module path and import that.
+    # When `module` is a directory, resolve its module path and import that,
+    # including mapping subdirectories to subpackage import paths.
     runtime_pkg = module
     build_target = module
-    if Path(module).is_dir():
+    module_path_arg = Path(module)
+    if module_path_arg.exists() and module_path_arg.is_dir():
         from .builder.resolve import resolve_module_target
 
         resolved = resolve_module_target(target=module, version=version)
-        runtime_pkg = resolved.module_path
+        build_target = str(resolved.module_dir)
+        # If `module` points to a subdirectory of the module, treat it as a
+        # subpackage import path under the module.
+        rel = module_path_arg.resolve().relative_to(resolved.module_dir)
+        if str(rel) == ".":
+            runtime_pkg = resolved.module_path
+        else:
+            suffix = "/".join(rel.parts)
+            runtime_pkg = f"{resolved.module_path}/{suffix}"
 
-    artifact_root = Path(artifact_dir)
     try:
         manifest = resolve_manifest(artifact_root, package=runtime_pkg, version=version)
     except ArtifactNotFoundError:

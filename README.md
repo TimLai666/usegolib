@@ -40,6 +40,17 @@ h = usegolib.import_("example.com/mod", artifact_dir="out/artifact")
 print(h.AddInt(1, 2))
 ```
 
+Convenience (dev): omit `artifact_dir` to use the default artifact cache root.
+If the artifact is missing, `usegolib.import_` will build it into the default cache
+when a Go toolchain is available.
+
+```python
+import usegolib
+
+h = usegolib.import_("example.com/mod")
+print(h.AddInt(1, 2))
+```
+
 Typed wrappers (when schema is present in the artifact manifest):
 
 ```python
