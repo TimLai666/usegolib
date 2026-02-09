@@ -1,8 +1,15 @@
 import json
+import hashlib
 from pathlib import Path
 
 
 def _write_manifest(dirpath: Path, module: str, version: str) -> None:
+    lib_bytes = b""
+    lib_path = dirpath / "libusegolib.dll"
+    dirpath.mkdir(parents=True, exist_ok=True)
+    lib_path.write_bytes(lib_bytes)
+    sha = hashlib.sha256(lib_bytes).hexdigest()
+
     manifest = {
         "manifest_version": 1,
         "abi_version": 0,
@@ -12,9 +19,8 @@ def _write_manifest(dirpath: Path, module: str, version: str) -> None:
         "goarch": "amd64",
         "packages": [module],
         "symbols": [],
-        "library": {"path": "libusegolib.dll", "sha256": "00" * 32},
+        "library": {"path": "libusegolib.dll", "sha256": sha},
     }
-    dirpath.mkdir(parents=True, exist_ok=True)
     (dirpath / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
@@ -33,4 +39,3 @@ def test_version_conflict_is_rejected(tmp_path: Path):
         pass
     else:
         raise AssertionError("expected VersionConflictError")
-

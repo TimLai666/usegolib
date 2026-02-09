@@ -1,9 +1,15 @@
 import json
+import hashlib
 from pathlib import Path
 
 
 def test_load_artifact_reads_manifest(tmp_path: Path):
     import usegolib
+
+    lib_bytes = b""
+    lib_path = tmp_path / "libusegolib.dll"
+    lib_path.write_bytes(lib_bytes)
+    sha = hashlib.sha256(lib_bytes).hexdigest()
 
     manifest = {
         "manifest_version": 1,
@@ -14,7 +20,7 @@ def test_load_artifact_reads_manifest(tmp_path: Path):
         "goarch": "amd64",
         "packages": ["example.com/mod"],
         "symbols": [],
-        "library": {"path": "libusegolib.dll", "sha256": "00" * 32},
+        "library": {"path": "libusegolib.dll", "sha256": sha},
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -33,4 +39,3 @@ def test_load_artifact_missing_manifest(tmp_path: Path):
         assert "manifest.json" in str(e)
     else:
         raise AssertionError("expected ArtifactNotFoundError")
-

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -37,9 +38,13 @@ def _write_manifest(
         "goarch": goarch,
         "packages": packages,
         "symbols": [],
-        "library": {"path": f"libusegolib{ext}", "sha256": "00" * 32},
+        "library": {"path": f"libusegolib{ext}"},
     }
     dirpath.mkdir(parents=True, exist_ok=True)
+    lib_bytes = b""
+    lib_path = dirpath / f"libusegolib{ext}"
+    lib_path.write_bytes(lib_bytes)
+    manifest["library"]["sha256"] = hashlib.sha256(lib_bytes).hexdigest()
     (dirpath / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 

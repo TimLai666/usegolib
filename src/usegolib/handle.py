@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -12,6 +14,7 @@ from .errors import (
     ABIEncodeError,
     GoError,
     GoPanicError,
+    LoadError,
     UnsupportedSignatureError,
     UnsupportedTypeError,
     UseGoLibError,
@@ -51,6 +54,7 @@ class PackageHandle:
             )
 
         if existing is None:
+            _verify_library_sha256(manifest)
             existing = _Runtime(
                 module=manifest.module,
                 version=manifest.version,
@@ -121,6 +125,32 @@ class PackageHandle:
 
     def typed(self) -> "TypedPackageHandle":
         return TypedPackageHandle(self)
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _sha256_file(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:  # noqa: PTH123 - runtime file read
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _verify_library_sha256(manifest: ArtifactManifest) -> None:
+    want = (manifest.library_sha256 or "").strip()
+    if not want:
+        raise LoadError("manifest missing library.sha256")
+    if not _SHA256_RE.fullmatch(want):
+        raise LoadError("manifest library.sha256 must be 64 lowercase hex characters")
+
+    lib_path = manifest.library_path
+    if not lib_path.exists():
+        raise LoadError(f"shared library not found at {lib_path}")
+    got = _sha256_file(lib_path)
+    if got != want:
+        raise LoadError(f"shared library sha256 mismatch: expected {want}, got {got}")
 
 
 @dataclass(frozen=True)
