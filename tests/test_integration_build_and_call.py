@@ -173,6 +173,10 @@ def _write_go_test_module(mod_dir: Path) -> None:
 )
 def test_build_and_call(tmp_path: Path):
     import usegolib
+    import usegolib.artifact
+    import usegolib.bindgen
+    import usegolib.schema
+    import importlib.util
 
     mod_dir = tmp_path / "gomod"
     mod_dir.mkdir()
@@ -290,3 +294,26 @@ def test_build_and_call(tmp_path: Path):
     w = ht.MakeWrapper()
     assert w.Title == "t"
     assert w.Person.Name == "w"
+
+    # Static bindings generator: emit a Python module and call through it.
+    manifest = usegolib.artifact.resolve_manifest(out_dir, package="example.com/testmod", version=None)
+    schema = usegolib.schema.Schema.from_manifest(manifest.schema)
+    assert schema is not None
+
+    bind_path = tmp_path / "bindings_testmod.py"
+    usegolib.bindgen.generate_python_bindings(
+        schema=schema,
+        pkg="example.com/testmod",
+        out_file=bind_path,
+        opts=usegolib.bindgen.BindgenOptions(package="example.com/testmod"),
+    )
+    spec = importlib.util.spec_from_file_location("bindings_testmod", bind_path)
+    assert spec is not None and spec.loader is not None
+    m = importlib.util.module_from_spec(spec)
+    import sys as _sys
+
+    _sys.modules[spec.name] = m
+    spec.loader.exec_module(m)  # type: ignore[attr-defined]
+
+    api = m.load(artifact_dir=out_dir)
+    assert api.AddInt(1, 2) == 3

@@ -25,6 +25,15 @@ def main() -> None:
     p_pkg.add_argument("--out", required=True, help="Output directory for the generated project.")
     p_pkg.add_argument("--version", default=None, help="Go module version (remote only; default: @latest).")
 
+    p_gen = sub.add_parser(
+        "gen",
+        help="Generate a static Python bindings module from an artifact manifest schema.",
+    )
+    p_gen.add_argument("--artifact-dir", required=True, help="Artifact root directory containing manifest.json.")
+    p_gen.add_argument("--package", required=True, help="Go package import path to generate bindings for.")
+    p_gen.add_argument("--out", required=True, help="Output .py file path.")
+    p_gen.add_argument("--version", default=None, help="Artifact version to resolve (optional).")
+
     args = parser.parse_args()
     if args.cmd == "version":
         print("0.0.0")
@@ -68,4 +77,23 @@ def main() -> None:
                 import shutil
 
                 shutil.rmtree(tmp_root, ignore_errors=True)
+        return
+
+    if args.cmd == "gen":
+        from .artifact import resolve_manifest
+        from .bindgen import BindgenOptions, generate_python_bindings
+        from .schema import Schema
+
+        artifact_root = Path(args.artifact_dir)
+        manifest = resolve_manifest(artifact_root, package=args.package, version=args.version)
+        schema = Schema.from_manifest(manifest.schema)
+        if schema is None:
+            raise SystemExit("manifest schema is missing; rebuild artifact with schema exchange enabled")
+
+        generate_python_bindings(
+            schema=schema,
+            pkg=args.package,
+            out_file=Path(args.out),
+            opts=BindgenOptions(package=args.package),
+        )
         return

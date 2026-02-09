@@ -115,6 +115,10 @@ class PackageHandle:
 
         return _call
 
+    @property
+    def schema(self) -> Schema | None:
+        return self._schema
+
     def typed(self) -> "TypedPackageHandle":
         return TypedPackageHandle(self)
 

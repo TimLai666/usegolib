@@ -88,6 +88,21 @@ def make_package_types(*, schema: Schema, pkg: str) -> PackageTypes:
     return PackageTypes(pkg=pkg, schema=schema, structs=created)
 
 
+def package_types_from_classes(*, schema: Schema, pkg: str, structs: dict[str, type]) -> PackageTypes:
+    """Create PackageTypes using user-supplied struct dataclasses.
+
+    This enables generated static modules to decode results into stable classes,
+    while still using the runtime's schema to map keys and nested types.
+    """
+    for name, cls in structs.items():
+        # Best-effort: set markers so encode_value can treat them as record structs.
+        if not hasattr(cls, "__usegolib_pkg__"):
+            setattr(cls, "__usegolib_pkg__", pkg)
+        if not hasattr(cls, "__usegolib_struct__"):
+            setattr(cls, "__usegolib_struct__", name)
+    return PackageTypes(pkg=pkg, schema=schema, structs=dict(structs))
+
+
 def dataclass_field(meta: dict[str, Any], *, default: Any = MISSING):
     # Small wrapper so we can attach per-field metadata.
     from dataclasses import field as dc_field
