@@ -17,6 +17,8 @@ class StructField:
     type: str
     key: str
     aliases: list[str]
+    omitempty: bool = False
+    embedded: bool = False
 
 
 @dataclass(frozen=True)

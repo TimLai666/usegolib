@@ -39,26 +39,35 @@ def _parse_type(t: str) -> tuple[str, list[str]]:
 
 
 @dataclass(frozen=True)
+class StructSchema:
+    # key/alias -> goFieldName
+    key_to_name: dict[str, str]
+    # goFieldName -> (goTypeString, required)
+    fields_by_name: dict[str, tuple[str, bool]]
+
+
+@dataclass(frozen=True)
 class Schema:
-    # pkg -> structName -> key -> (goFieldName, goTypeString)
-    structs_by_pkg: dict[str, dict[str, dict[str, tuple[str, str]]]]
+    # pkg -> structName -> schema
+    structs_by_pkg: dict[str, dict[str, StructSchema]]
     symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]]
 
     @classmethod
     def from_manifest(cls, manifest_schema: dict[str, Any] | None) -> "Schema | None":
         if not manifest_schema:
             return None
-        structs: dict[str, dict[str, dict[str, tuple[str, str]]]] = {}
+        structs: dict[str, dict[str, StructSchema]] = {}
         raw_structs = manifest_schema.get("structs")
         if isinstance(raw_structs, dict):
             for pkg, by_name in raw_structs.items():
                 if not isinstance(pkg, str) or not isinstance(by_name, dict):
                     continue
-                pkg_out: dict[str, dict[str, tuple[str, str]]] = {}
+                pkg_out: dict[str, StructSchema] = {}
                 for name, fields in by_name.items():
                     if not isinstance(name, str) or not isinstance(fields, list):
                         continue
-                    field_map: dict[str, tuple[str, str]] = {}
+                    key_to_name: dict[str, str] = {}
+                    fields_by_name: dict[str, tuple[str, bool]] = {}
                     for f in fields:
                         if not isinstance(f, dict):
                             continue
@@ -66,6 +75,9 @@ class Schema:
                         ft = f.get("type")
                         fk = f.get("key")
                         fa = f.get("aliases")
+                        fr = f.get("required")
+                        fo = f.get("omitempty")
+                        fe = f.get("embedded")
                         if not (isinstance(fn, str) and isinstance(ft, str) and fn and ft):
                             continue
                         key = fk if isinstance(fk, str) and fk else fn
@@ -73,18 +85,31 @@ class Schema:
                         if isinstance(fa, list) and all(isinstance(x, str) for x in fa):
                             aliases = [x for x in fa if x]
 
+                        omitempty = bool(fo) if isinstance(fo, bool) else False
+                        embedded = bool(fe) if isinstance(fe, bool) else False
+                        if isinstance(fr, bool):
+                            required = fr
+                        else:
+                            required = not ft.strip().startswith("*")
+                        if omitempty:
+                            required = False
+                        fields_by_name[fn] = (ft, required)
+
                         # Always accept exported field name and canonical key.
                         all_keys = {fn, key, *aliases}
                         for k in all_keys:
                             if not k:
                                 continue
-                            existing = field_map.get(k)
-                            if existing is not None and existing[0] != fn:
+                            existing = key_to_name.get(k)
+                            if existing is not None and existing != fn:
                                 # Ambiguous alias; drop it rather than picking a wrong field.
                                 continue
-                            field_map[k] = (fn, ft)
-                    if field_map:
-                        pkg_out[name] = field_map
+                            key_to_name[k] = fn
+
+                    if key_to_name and fields_by_name:
+                        pkg_out[name] = StructSchema(
+                            key_to_name=key_to_name, fields_by_name=fields_by_name
+                        )
                 if pkg_out:
                     structs[pkg] = pkg_out
 
@@ -208,8 +233,8 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
         return
 
     # Struct (record)
-    fields = schema.structs_by_pkg.get(pkg, {}).get(t)
-    if fields is None:
+    st = schema.structs_by_pkg.get(pkg, {}).get(t)
+    if st is None:
         raise UnsupportedTypeError("unknown type")
     if v is None:
         raise UnsupportedTypeError("expected dict")
@@ -219,10 +244,11 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
     for k in v.keys():
         if not isinstance(k, str):
             raise UnsupportedTypeError("expected str keys")
-        if k not in fields:
+        if k not in st.key_to_name:
             raise UnsupportedTypeError(f"unknown field {k}")
     for k, vv in v.items():
-        field_name, field_type = fields[k]
+        field_name = st.key_to_name[k]
+        field_type, _required = st.fields_by_name[field_name]
         if field_name in seen_fields:
             raise UnsupportedTypeError(f"duplicate field {field_name}")
         seen_fields.add(field_name)
@@ -230,3 +256,9 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
             _validate_value(schema=schema, pkg=pkg, t=field_type, v=vv)
         except UnsupportedTypeError as e:
             raise UnsupportedTypeError(f"field {k} ({field_type}): {e}") from None
+
+    missing = sorted(
+        name for name, (_ft, req) in st.fields_by_name.items() if req and name not in seen_fields
+    )
+    if missing:
+        raise UnsupportedTypeError(f"missing required field(s): {', '.join(missing)}")

@@ -96,6 +96,8 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                         ft = f.get("type")
                         fk = f.get("key")
                         fa = f.get("aliases")
+                        fo = f.get("omitempty")
+                        fe = f.get("embedded")
                         if not (isinstance(fn, str) and isinstance(ft, str) and fn and ft):
                             continue
                         if not isinstance(fk, str) or not fk:
@@ -103,7 +105,18 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                         aliases: list[str] = []
                         if isinstance(fa, list) and all(isinstance(x, str) for x in fa):
                             aliases = [x for x in fa if x]
-                        out_fields.append(StructField(name=fn, type=ft, key=fk, aliases=aliases))
+                        omitempty = bool(fo) if isinstance(fo, bool) else False
+                        embedded = bool(fe) if isinstance(fe, bool) else False
+                        out_fields.append(
+                            StructField(
+                                name=fn,
+                                type=ft,
+                                key=fk,
+                                aliases=aliases,
+                                omitempty=omitempty,
+                                embedded=embedded,
+                            )
+                        )
                     by_name[name] = out_fields
                 if by_name:
                     structs_by_pkg[pkg] = by_name
@@ -167,6 +180,8 @@ type outStructField struct {
 	Type string `json:"type"`
 	Key string `json:"key"`
 	Aliases []string `json:"aliases"`
+	OmitEmpty bool `json:"omitempty"`
+	Embedded bool `json:"embedded"`
 }
 
 type outStruct struct {
@@ -344,7 +359,7 @@ func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string]
 					// Record exported fields and their types for schema exchange.
 					fields := []outStructField{}
 					for _, f := range st.Fields.List {
-						if f == nil || f.Type == nil || len(f.Names) == 0 {
+						if f == nil || f.Type == nil {
 							continue
 						}
 						t := renderType(f.Type)
@@ -357,8 +372,58 @@ func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string]
 								tag = s
 							}
 						}
-						msgpackKey := tagName(reflect.StructTag(tag).Get("msgpack"))
-						jsonKey := tagName(reflect.StructTag(tag).Get("json"))
+						mpTag := reflect.StructTag(tag).Get("msgpack")
+						jsTag := reflect.StructTag(tag).Get("json")
+						// Ignore semantics follow canonical precedence: msgpack tag if present, else json.
+						if mpTag != "" {
+							if tagIgnored(mpTag) {
+								continue
+							}
+						} else if jsTag != "" {
+							if tagIgnored(jsTag) {
+								continue
+							}
+						}
+						omitempty := false
+						if mpTag != "" {
+							omitempty = tagHasOption(mpTag, "omitempty")
+						} else if jsTag != "" {
+							omitempty = tagHasOption(jsTag, "omitempty")
+						}
+
+						msgpackKey := tagName(mpTag)
+						jsonKey := tagName(jsTag)
+
+						if len(f.Names) == 0 {
+							// Embedded (anonymous) field: use the type name as the Go field name.
+							base := strings.TrimPrefix(t, "*")
+							if i := strings.LastIndex(base, "."); i >= 0 {
+								base = base[i+1:]
+							}
+							if !ast.IsExported(base) {
+								continue
+							}
+							key := base
+							if msgpackKey != "" {
+								key = msgpackKey
+							} else if jsonKey != "" {
+								key = jsonKey
+							}
+							aliases := map[string]bool{}
+							aliases[base] = true
+							if msgpackKey != "" {
+								aliases[msgpackKey] = true
+							}
+							if jsonKey != "" {
+								aliases[jsonKey] = true
+							}
+							alist := make([]string, 0, len(aliases))
+							for a := range aliases {
+								alist = append(alist, a)
+							}
+							fields = append(fields, outStructField{Name: base, Type: t, Key: key, Aliases: alist, OmitEmpty: omitempty, Embedded: true})
+							continue
+						}
 						for _, nm := range f.Names {
 							if nm == nil || !nm.IsExported() {
 								continue
@@ -381,7 +446,7 @@ func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string]
 							for a := range aliases {
 								alist = append(alist, a)
 							}
-							fields = append(fields, outStructField{Name: nm.Name, Type: t, Key: key, Aliases: alist})
+							fields = append(fields, outStructField{Name: nm.Name, Type: t, Key: key, Aliases: alist, OmitEmpty: omitempty, Embedded: false})
 						}
 					}
 					if len(fields) > 0 {
@@ -408,6 +473,35 @@ func tagName(tag string) string {
 		return ""
 	}
 	return n
+}
+
+func tagIgnored(tag string) bool {
+	if tag == "" {
+		return false
+	}
+	// `-` or `-,omitempty` etc.
+	if tag[0] == '-' {
+		return true
+	}
+	return false
+}
+
+func tagHasOption(tag string, opt string) bool {
+	if tag == "" || opt == "" {
+		return false
+	}
+	// Fast path: options always occur after the first comma.
+	i := strings.IndexByte(tag, ',')
+	if i < 0 {
+		return false
+	}
+	opts := tag[i+1:]
+	for _, part := range strings.Split(opts, ",") {
+		if part == opt {
+			return true
+		}
+	}
+	return false
 }
 
 func renderType(e ast.Expr) string {

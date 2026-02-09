@@ -282,6 +282,12 @@ def build_artifact(
                                     "type": f.type,
                                     "key": f.key,
                                     "aliases": f.aliases,
+                                    "omitempty": f.omitempty,
+                                    "embedded": f.embedded,
+                                    "required": (
+                                        (not f.type.strip().startswith("*"))
+                                        and (not f.omitempty)
+                                    ),
                                 }
                                 for f in fields
                             ]

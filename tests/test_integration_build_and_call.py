@@ -31,8 +31,15 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "type Person struct {",
                 "    Name string `json:\"name\"`",
                 "    Age int64 `msgpack:\"age\"`",
+                "    Nick string `json:\"nick,omitempty\"`",
+                "    Secret string `json:\"-\"`",
                 "    Data []byte",
                 "    Meta map[string]int64",
+                "}",
+                "",
+                "type Wrapper struct {",
+                "    Person",
+                "    Title string `json:\"title\"`",
                 "}",
                 "",
                 "type Company struct {",
@@ -45,7 +52,12 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "}",
                 "",
                 "func MakePerson(name string, age int64) Person {",
-                "    return Person{Name: name, Age: age, Data: []byte(name), Meta: map[string]int64{\"age\": age}}",
+                "    return Person{Name: name, Age: age, Nick: \"\", Secret: \"shh\", Data: []byte(name), Meta: map[string]int64{\"age\": age}}",
+                "}",
+                "",
+                "func MakeWrapper() Wrapper {",
+                "    p := MakePerson(\"w\", 1)",
+                "    return Wrapper{Person: p, Title: \"t\"}",
                 "}",
                 "",
                 "func MakeCompany() Company {",
@@ -59,6 +71,10 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "",
                 "func EchoCompany(c Company) Company {",
                 "    return c",
+                "}",
+                "",
+                "func EchoWrapper(w Wrapper) Wrapper {",
+                "    return w",
                 "}",
                 "",
                 "func After(t0 time.Time, t1 time.Time) bool {",
@@ -173,6 +189,10 @@ def test_build_and_call(tmp_path: Path):
     assert h.AddInt(1, 2) == 3
     assert h.AddGrouped(10, 20) == 30
     assert h.MakePerson("bob", 20) == {"name": "bob", "age": 20, "Data": b"bob", "Meta": {"age": 20}}
+    assert h.MakeWrapper() == {
+        "Person": {"name": "w", "age": 1, "Data": b"w", "Meta": {"age": 1}},
+        "title": "t",
+    }
     assert h.MakeCompany() == {
         "ceo": {"name": "ceo", "age": 40, "Data": b"ceo", "Meta": {"age": 40}},
         "Employees": [
@@ -211,6 +231,8 @@ def test_build_and_call(tmp_path: Path):
                 "Employees": [{"name": "y", "age": 2, "Data": b"y", "Meta": {}}],
                 "VP": None,
                 "Teams": {},
+                "founded": "2020-01-02T03:04:05.000000006Z",
+                "timeout": 0,
             }
         ]
     ) == 1
@@ -221,7 +243,10 @@ def test_build_and_call(tmp_path: Path):
         "Meta": {"age": 17},
     }
     assert h.IsAdult({"name": "z", "age": 18, "Data": b"", "Meta": {}}) is True
-    assert h.IsAdult({"name": "z"}) is False
+    with pytest.raises(usegolib.errors.UnsupportedTypeError, match=r"schema:"):
+        h.IsAdult({"name": "z"})
+    with pytest.raises(usegolib.errors.UnsupportedTypeError, match=r"schema:"):
+        h.EchoWrapper({"title": "t"})
     assert h.SumMap({"a": 1, "b": 2}) == 3
     assert h.SumMapSlices({"x": [1, 2], "y": [3]}) == 6
     assert h.ReturnMapBytes() == {"a": b"abc", "b": bytes([0, 1, 2])}
