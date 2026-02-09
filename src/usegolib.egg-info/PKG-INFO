@@ -1,3 +1,17 @@
+Metadata-Version: 2.4
+Name: usegolib
+Version: 0.0.0
+Summary: Python runtime + builder for calling Go shared libraries directly (MessagePack ABI).
+Author: TimLai666
+License-Expression: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: msgpack>=1.0.7
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Dynamic: license-file
+
 # usegolib
 
 **usegolib** lets Python call Go libraries by loading a Go-built shared library directly into the Python process.

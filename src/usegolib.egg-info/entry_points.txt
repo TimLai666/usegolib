@@ -1,0 +1,2 @@
+[console_scripts]
+usegolib = usegolib.cli:main
