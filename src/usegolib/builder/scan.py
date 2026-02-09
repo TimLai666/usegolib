@@ -237,7 +237,8 @@ func main() {
 			if err != nil {
 				continue
 			}
-			collectStructTypes(af, structNames, structFields)
+			im := fileImports(af)
+			collectStructTypes(af, im, structNames, structFields)
 			for _, decl := range af.Decls {
 				fd, ok := decl.(*ast.FuncDecl)
 				if !ok {
@@ -254,8 +255,8 @@ func main() {
 					continue
 				}
 
-				params := fieldListTypes(fd.Type.Params)
-				results := fieldListTypes(fd.Type.Results)
+				params := fieldListTypes(fd.Type.Params, im)
+				results := fieldListTypes(fd.Type.Results, im)
 				if params == nil || results == nil {
 					continue
 				}
@@ -317,7 +318,7 @@ func listPkgs() ([]goListPkg, error) {
 	return pkgs, nil
 }
 
-func fieldListTypes(fl *ast.FieldList) []string {
+func fieldListTypes(fl *ast.FieldList, im map[string]string) []string {
 	if fl == nil || fl.List == nil {
 		return []string{}
 	}
@@ -326,7 +327,7 @@ func fieldListTypes(fl *ast.FieldList) []string {
 		if f == nil || f.Type == nil {
 			return nil
 		}
-		t := renderType(f.Type)
+		t := renderType(f.Type, im)
 		if t == "" {
 			return nil
 		}
@@ -341,7 +342,7 @@ func fieldListTypes(fl *ast.FieldList) []string {
 	return out
 }
 
-func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string][]outStructField) {
+func collectStructTypes(af *ast.File, im map[string]string, out map[string]bool, fieldsOut map[string][]outStructField) {
 	for _, decl := range af.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || gd.Tok != token.TYPE {
@@ -362,7 +363,7 @@ func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string]
 						if f == nil || f.Type == nil {
 							continue
 						}
-						t := renderType(f.Type)
+						t := renderType(f.Type, im)
 						if t == "" {
 							continue
 						}
@@ -398,6 +399,9 @@ func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string]
 							// Embedded (anonymous) field: use the type name as the Go field name.
 							base := strings.TrimPrefix(t, "*")
 							if i := strings.LastIndex(base, "."); i >= 0 {
+								base = base[i+1:]
+							}
+							if i := strings.LastIndex(base, "/"); i >= 0 {
 								base = base[i+1:]
 							}
 							if !ast.IsExported(base) {
@@ -504,7 +508,7 @@ func tagHasOption(tag string, opt string) bool {
 	return false
 }
 
-func renderType(e ast.Expr) string {
+func renderType(e ast.Expr, im map[string]string) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		return t.Name
@@ -512,37 +516,82 @@ func renderType(e ast.Expr) string {
 		if t.Len != nil {
 			return ""
 		}
-		inner := renderType(t.Elt)
+		inner := renderType(t.Elt, im)
 		if inner == "" {
 			return ""
 		}
 		return "[]" + inner
 	case *ast.MapType:
-		k := renderType(t.Key)
+		k := renderType(t.Key, im)
 		if k != "string" {
 			return ""
 		}
-		v := renderType(t.Value)
+		v := renderType(t.Value, im)
 		if v == "" {
 			return ""
 		}
 		return "map[string]" + v
 	case *ast.SelectorExpr:
-		p := renderType(t.X)
+		p := renderType(t.X, im)
 		if p == "" {
 			return ""
 		}
+		// Canonicalize well-known adapter types based on import path, regardless of local alias.
+		if path, ok := im[p]; ok {
+			if path == "github.com/google/uuid" && t.Sel.Name == "UUID" {
+				return "uuid.UUID"
+			}
+		}
 		return p + "." + t.Sel.Name
 	case *ast.StarExpr:
-		inner := renderType(t.X)
+		inner := renderType(t.X, im)
 		if inner == "" {
 			return ""
 		}
 		return "*" + inner
 	case *ast.ParenExpr:
-		return renderType(t.X)
+		return renderType(t.X, im)
 	default:
 		return ""
 	}
+}
+
+func fileImports(af *ast.File) map[string]string {
+	out := map[string]string{}
+	if af == nil {
+		return out
+	}
+	for _, imp := range af.Imports {
+		if imp == nil || imp.Path == nil {
+			continue
+		}
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || path == "" {
+			continue
+		}
+		name := ""
+		if imp.Name != nil {
+			name = imp.Name.Name
+			// Skip blank identifier and dot imports.
+			if name == "_" || name == "." {
+				continue
+			}
+		} else {
+			name = defaultImportName(path)
+		}
+		if name == "" {
+			continue
+		}
+		out[name] = path
+	}
+	return out
+}
+
+func defaultImportName(path string) string {
+	i := strings.LastIndex(path, "/")
+	if i < 0 {
+		return path
+	}
+	return path[i+1:]
 }
 '''

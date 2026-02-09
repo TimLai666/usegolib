@@ -16,6 +16,8 @@ def _py_type_for_go(schema: Schema, pkg: str, go_type: str) -> Any:
         ty: Any = str
     elif base == "time.Duration":
         ty = int
+    elif base == "uuid.UUID":
+        ty = str
     elif base == "[]byte":
         ty = bytes
         ops = []  # treat as scalar
@@ -161,6 +163,7 @@ def decode_value(*, types: PackageTypes, go_type: str, v: Any) -> Any:
         "[]byte",
         "time.Time",
         "time.Duration",
+        "uuid.UUID",
     }:
         return v
 

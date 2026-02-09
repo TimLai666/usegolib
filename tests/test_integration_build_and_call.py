@@ -26,11 +26,13 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 'import (',
                 '    "errors"',
                 '    "time"',
+                '    gouuid "github.com/google/uuid"',
                 ')',
                 "",
                 "type Person struct {",
                 "    Name string `json:\"name\"`",
                 "    Age int64 `msgpack:\"age\"`",
+                "    ID *gouuid.UUID `json:\"id,omitempty\"`",
                 "    Nick string `json:\"nick,omitempty\"`",
                 "    Secret string `json:\"-\"`",
                 "    Data []byte",
@@ -52,7 +54,8 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "}",
                 "",
                 "func MakePerson(name string, age int64) Person {",
-                "    return Person{Name: name, Age: age, Nick: \"\", Secret: \"shh\", Data: []byte(name), Meta: map[string]int64{\"age\": age}}",
+                "    id := gouuid.MustParse(\"123e4567-e89b-12d3-a456-426614174000\")",
+                "    return Person{Name: name, Age: age, ID: &id, Nick: \"\", Secret: \"shh\", Data: []byte(name), Meta: map[string]int64{\"age\": age}}",
                 "}",
                 "",
                 "func MakeWrapper() Wrapper {",
@@ -75,6 +78,10 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "",
                 "func EchoWrapper(w Wrapper) Wrapper {",
                 "    return w",
+                "}",
+                "",
+                "func EchoUUID(id gouuid.UUID) gouuid.UUID {",
+                "    return id",
                 "}",
                 "",
                 "func After(t0 time.Time, t1 time.Time) bool {",
@@ -188,9 +195,21 @@ def test_build_and_call(tmp_path: Path):
     h = usegolib.import_("example.com/testmod", artifact_dir=out_dir)
     assert h.AddInt(1, 2) == 3
     assert h.AddGrouped(10, 20) == 30
-    assert h.MakePerson("bob", 20) == {"name": "bob", "age": 20, "Data": b"bob", "Meta": {"age": 20}}
+    assert h.MakePerson("bob", 20) == {
+        "name": "bob",
+        "age": 20,
+        "id": "123e4567-e89b-12d3-a456-426614174000",
+        "Data": b"bob",
+        "Meta": {"age": 20},
+    }
     assert h.MakeWrapper() == {
-        "Person": {"name": "w", "age": 1, "Data": b"w", "Meta": {"age": 1}},
+        "Person": {
+            "name": "w",
+            "age": 1,
+            "id": "123e4567-e89b-12d3-a456-426614174000",
+            "Data": b"w",
+            "Meta": {"age": 1},
+        },
         "title": "t",
     }
     assert h.MakeCompany() == {
@@ -207,6 +226,7 @@ def test_build_and_call(tmp_path: Path):
     assert h.After("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z") is True
     assert h.AddOneDay("2020-01-01T00:00:00Z") == "2020-01-02T00:00:00Z"
     assert h.AddDuration(1_000_000_000, 2_000_000_000) == 3_000_000_000
+    assert h.EchoUUID("123e4567-e89b-12d3-a456-426614174000") == "123e4567-e89b-12d3-a456-426614174000"
     assert h.EchoCompany(
         {
             "ceo": {"name": "x", "age": 1, "Data": b"x", "Meta": {"age": 1}},
@@ -261,6 +281,7 @@ def test_build_and_call(tmp_path: Path):
     p = ht.MakePerson("bob", 20)
     assert p.Name == "bob"
     assert p.Age == 20
+    assert p.ID == "123e4567-e89b-12d3-a456-426614174000"
     assert p.Nick is None  # omitted by omitempty
     assert p.Data == b"bob"
     assert p.Meta == {"age": 20}

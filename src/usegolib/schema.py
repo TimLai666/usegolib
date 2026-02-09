@@ -197,6 +197,10 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
         if v < lo or v > hi:
             raise UnsupportedTypeError("int out of range")
         return
+    if t == "uuid.UUID":
+        if not isinstance(v, str):
+            raise UnsupportedTypeError("expected UUID string")
+        return
 
     if t.startswith("*"):
         if v is None:

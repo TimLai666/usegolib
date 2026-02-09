@@ -191,6 +191,8 @@ def write_bridge(
         import_block.append('    "strings"')
     if needs_reflect:
         import_block.append('    "time"')
+    if "uuid.UUID" in adapter_types:
+        import_block.append('    uuid "github.com/google/uuid"')
     for pkg, alias in imports.items():
         import_block.append(f'    {alias} "{pkg}"')
     import_block.append(")")
@@ -256,6 +258,7 @@ def _write_wrapper(
         if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
             "time.Time",
             "time.Duration",
+            "uuid.UUID",
         }:
             lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
             lines.append("    if !ok {")
@@ -275,6 +278,7 @@ def _write_wrapper(
         if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
             "time.Time",
             "time.Duration",
+            "uuid.UUID",
         }:
             lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
             lines.append("    if !ok {")
@@ -358,6 +362,14 @@ def _write_arg_convert(
         return lines
 
     if _base_type(go_type) == "time.Duration":
+        typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
+        lines.append(f"    {var_name}, ok := toGoValue[{typ}]({value_expr})")
+        lines.append("    if !ok {")
+        unsupported()
+        lines.append("    }")
+        return lines
+
+    if _base_type(go_type) == "uuid.UUID":
         typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
         lines.append(f"    {var_name}, ok := toGoValue[{typ}]({value_expr})")
         lines.append("    if !ok {")
@@ -581,6 +593,7 @@ def _write_helpers(
     allowed_struct_type_keys: list[str],
     adapter_types: list[str],
 ) -> list[str]:
+    adapter_type_set = set(adapter_types)
     out = [
         "func toUnsupported(v any) (any, bool) {",
         "    _ = v",
@@ -1052,11 +1065,25 @@ def _write_helpers(
             "}",
             "",
             "func convertToType(v any, t reflect.Type) (reflect.Value, bool) {",
+            "    // Adapter: github.com/google/uuid.UUID encoded as string.",
+            "    if t.PkgPath() == \"github.com/google/uuid\" && t.Name() == \"UUID\" {",
+            "        s, ok := toString(v)",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        id, err := uuid.Parse(s)",
+            "        if err != nil {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.New(t).Elem()",
+            "        out.Set(reflect.ValueOf(id))",
+            "        return out, true",
+            "    }",
             "    switch t.Kind() {",
             "    case reflect.Bool:",
             "        b, ok := toBool(v)",
             "        if !ok {",
-            "            return reflect.Value{}, false",
+                "            return reflect.Value{}, false",
             "        }",
             "        out := reflect.New(t).Elem()",
             "        out.SetBool(b)",
@@ -1222,6 +1249,11 @@ def _write_helpers(
             "        }",
             "        v = v.Elem()",
             "    }",
+            "    // Adapter: github.com/google/uuid.UUID encoded as string.",
+            "    if v.Type().PkgPath() == \"github.com/google/uuid\" && v.Type().Name() == \"UUID\" {",
+            "        id := v.Interface().(uuid.UUID)",
+            "        return id.String(), true",
+            "    }",
             "    switch v.Kind() {",
             "    case reflect.Bool, reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float32, reflect.Float64:",
             "        return v.Interface(), true",
@@ -1384,5 +1416,34 @@ def _write_helpers(
             "}",
         ]
     )
+
+    if "uuid.UUID" not in adapter_type_set:
+        # Remove uuid adapter blocks when the dependency isn't needed, to avoid
+        # importing google/uuid (and referencing `uuid`) for unrelated builds.
+        filtered: list[str] = []
+        ctx = ""
+        skipping = False
+        skip_until = ""
+        uuid_marker = "    // Adapter: github.com/google/uuid.UUID encoded as string."
+        for line in out:
+            if line == "func convertToType(v any, t reflect.Type) (reflect.Value, bool) {":
+                ctx = "convert"
+            elif line == "func exportAny(v reflect.Value) (any, bool) {":
+                ctx = "export"
+
+            if not skipping and line == uuid_marker:
+                skipping = True
+                skip_until = "    switch t.Kind() {" if ctx == "convert" else "    switch v.Kind() {"
+                continue
+
+            if skipping:
+                if line == skip_until:
+                    skipping = False
+                    skip_until = ""
+                    filtered.append(line)
+                continue
+
+            filtered.append(line)
+        out = filtered
 
     return out
