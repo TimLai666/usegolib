@@ -29,6 +29,31 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    return a + b",
                 "}",
                 "",
+                "func SumMap(m map[string]int64) int64 {",
+                "    var s int64",
+                "    for _, v := range m {",
+                "        s += v",
+                "    }",
+                "    return s",
+                "}",
+                "",
+                "func SumMapSlices(m map[string][]int64) int64 {",
+                "    var s int64",
+                "    for _, xs := range m {",
+                "        for _, v := range xs {",
+                "            s += v",
+                "        }",
+                "    }",
+                "    return s",
+                "}",
+                "",
+                "func ReturnMapBytes() map[string][]byte {",
+                "    return map[string][]byte{",
+                '        "a": []byte("abc"),',
+                '        "b": []byte{0, 1, 2},',
+                "    }",
+                "}",
+                "",
                 "func EchoBytes(b []byte) []byte {",
                 "    return b",
                 "}",
@@ -78,6 +103,9 @@ def test_build_and_call(tmp_path: Path):
 
     h = usegolib.import_("example.com/testmod", artifact_dir=out_dir)
     assert h.AddInt(1, 2) == 3
+    assert h.SumMap({"a": 1, "b": 2}) == 3
+    assert h.SumMapSlices({"x": [1, 2], "y": [3]}) == 6
+    assert h.ReturnMapBytes() == {"a": b"abc", "b": bytes([0, 1, 2])}
     assert h.EchoBytes(b"abc") == b"abc"
     assert h.SumFloats([1.25, 2.5]) == pytest.approx(3.75)
 

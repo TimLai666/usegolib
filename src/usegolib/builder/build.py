@@ -112,7 +112,7 @@ def _scan_exported_funcs(module_dir: Path, pkg: str) -> list[ExportedFunc]:
 
 
 def _is_supported_type(t: str) -> bool:
-    return t in {
+    scalars = {
         "bool",
         "string",
         "[]byte",
@@ -123,6 +123,8 @@ def _is_supported_type(t: str) -> bool:
         "int64",
         "float32",
         "float64",
+    }
+    slices = {
         "[]bool",
         "[]string",
         "[]int",
@@ -130,6 +132,12 @@ def _is_supported_type(t: str) -> bool:
         "[]float64",
         "[][]byte",
     }
+    if t in scalars or t in slices:
+        return True
+    if t.startswith("map[string]"):
+        vt = t[len("map[string]") :]
+        return vt in scalars or vt in slices
+    return False
 
 
 def _is_supported_sig(fn: ExportedFunc) -> bool:

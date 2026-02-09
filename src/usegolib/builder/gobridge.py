@@ -219,6 +219,122 @@ def _write_arg_convert(*, var_name: str, go_type: str, value_expr: str) -> list[
             '    return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}'
         )
 
+    if go_type.startswith("map[string]"):
+        vt = go_type[len("map[string]") :]
+        tmp = f"t_{var_name}"
+
+        if vt == "int64":
+            lines.append(f"    {var_name}, ok := toStringInt64Map({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt in {"int", "int32", "int16", "int8"}:
+            lines.append(f"    {tmp}, ok := toStringInt64Map({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            lines.append(f"    {var_name} := make(map[string]{vt}, len({tmp}))")
+            lines.append(f"    for k, x := range {tmp} {{")
+            lines.append(f"        {var_name}[k] = {vt}(x)")
+            lines.append("    }")
+            return lines
+
+        if vt == "float64":
+            lines.append(f"    {var_name}, ok := toStringFloat64Map({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt == "float32":
+            lines.append(f"    {tmp}, ok := toStringFloat64Map({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            lines.append(f"    {var_name} := make(map[string]float32, len({tmp}))")
+            lines.append(f"    for k, x := range {tmp} {{")
+            lines.append(f"        {var_name}[k] = float32(x)")
+            lines.append("    }")
+            return lines
+
+        if vt == "string":
+            lines.append(f"    {var_name}, ok := toStringStringMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt == "bool":
+            lines.append(f"    {var_name}, ok := toStringBoolMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt == "[]byte":
+            lines.append(f"    {var_name}, ok := toStringBytesMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt == "[]int64":
+            lines.append(f"    {var_name}, ok := toStringInt64SliceMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt == "[]int":
+            lines.append(f"    {tmp}, ok := toStringInt64SliceMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            lines.append(f"    {var_name} := make(map[string][]int, len({tmp}))")
+            lines.append(f"    for k, xs := range {tmp} {{")
+            lines.append("        out := make([]int, 0, len(xs))")
+            lines.append("        for _, x := range xs {")
+            lines.append("            out = append(out, int(x))")
+            lines.append("        }")
+            lines.append(f"        {var_name}[k] = out")
+            lines.append("    }")
+            return lines
+
+        if vt == "[]float64":
+            lines.append(f"    {var_name}, ok := toStringFloat64SliceMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt == "[]string":
+            lines.append(f"    {var_name}, ok := toStringStringSliceMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt == "[]bool":
+            lines.append(f"    {var_name}, ok := toStringBoolSliceMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        if vt == "[][]byte":
+            lines.append(f"    {var_name}, ok := toStringBytesSliceMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
+
+        lines.append("    if true {")
+        unsupported()
+        lines.append("    }")
+        return lines
+
     if go_type in {"int64", "int", "int32", "int16", "int8"}:
         tmp = f"t_{var_name}"
         lines.append(f"    {tmp}, ok := toInt64({value_expr})")
@@ -493,5 +609,183 @@ def _write_helpers() -> list[str]:
         "    default:",
         "        return nil, false",
         "    }",
+        "}",
+        "",
+        "func toAnyMap(v any) (map[string]any, bool) {",
+        "    if m, ok := v.(map[string]any); ok {",
+        "        return m, true",
+        "    }",
+        "    if m, ok := v.(map[any]any); ok {",
+        "        out := make(map[string]any, len(m))",
+        "        for k, vv := range m {",
+        "            ks, ok := k.(string)",
+        "            if !ok {",
+        "                return nil, false",
+        "            }",
+        "            out[ks] = vv",
+        "        }",
+        "        return out, true",
+        "    }",
+        "    return nil, false",
+        "}",
+        "",
+        "func toStringInt64Map(v any) (map[string]int64, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string]int64, len(m))",
+        "    for k, vv := range m {",
+        "        n, ok := toInt64(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = n",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringFloat64Map(v any) (map[string]float64, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string]float64, len(m))",
+        "    for k, vv := range m {",
+        "        f, ok := toFloat64(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = f",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringStringMap(v any) (map[string]string, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string]string, len(m))",
+        "    for k, vv := range m {",
+        "        s, ok := toString(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = s",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringBoolMap(v any) (map[string]bool, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string]bool, len(m))",
+        "    for k, vv := range m {",
+        "        b, ok := toBool(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = b",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringBytesMap(v any) (map[string][]byte, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string][]byte, len(m))",
+        "    for k, vv := range m {",
+        "        b, ok := toBytes(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = b",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringInt64SliceMap(v any) (map[string][]int64, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string][]int64, len(m))",
+        "    for k, vv := range m {",
+        "        xs, ok := toInt64Slice(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = xs",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringFloat64SliceMap(v any) (map[string][]float64, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string][]float64, len(m))",
+        "    for k, vv := range m {",
+        "        xs, ok := toFloat64Slice(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = xs",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringStringSliceMap(v any) (map[string][]string, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string][]string, len(m))",
+        "    for k, vv := range m {",
+        "        xs, ok := toStringSlice(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = xs",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringBoolSliceMap(v any) (map[string][]bool, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string][]bool, len(m))",
+        "    for k, vv := range m {",
+        "        xs, ok := toBoolSlice(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = xs",
+        "    }",
+        "    return out, true",
+        "}",
+        "",
+        "func toStringBytesSliceMap(v any) (map[string][][]byte, bool) {",
+        "    m, ok := toAnyMap(v)",
+        "    if !ok {",
+        "        return nil, false",
+        "    }",
+        "    out := make(map[string][][]byte, len(m))",
+        "    for k, vv := range m {",
+        "        xs, ok := toBytesSlice(vv)",
+        "        if !ok {",
+        "            return nil, false",
+        "        }",
+        "        out[k] = xs",
+        "    }",
+        "    return out, true",
         "}",
     ]
