@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import BuildError
@@ -14,15 +13,9 @@ from .fingerprint import fingerprint_local_module_dir
 from .lock import leaf_lock
 from .resolve import resolve_module_target
 from .reuse import artifact_ready
+from .scan import scan_exported_funcs
+from .symbols import ExportedFunc
 from .zig import ensure_zig
-
-
-@dataclass(frozen=True)
-class ExportedFunc:
-    pkg: str
-    name: str
-    params: list[str]
-    results: list[str]
 
 
 def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -56,59 +49,6 @@ def _list_packages(module_dir: Path) -> list[str]:
     pkgs = [ln.strip() for ln in out.splitlines() if ln.strip()]
     # Exclude internal packages (Go import rules).
     return [p for p in pkgs if "/internal/" not in p and not p.endswith("/internal")]
-
-
-def _scan_exported_funcs(module_dir: Path, pkg: str) -> list[ExportedFunc]:
-    # Use `go doc` as a cheap scanner for v0.
-    out = _run(["go", "doc", "-all", pkg], cwd=module_dir)
-    funcs: list[ExportedFunc] = []
-    for line in out.splitlines():
-        line = line.strip()
-        if not line.startswith("func "):
-            continue
-        sig = line[len("func ") :]
-        # Expect: Name(args...) ret  OR  Name(args...) (ret1, ret2)
-        # Keep parsing minimal; ignore methods and generics.
-        if sig.startswith("("):  # method receiver - ignore
-            continue
-        name_end = sig.find("(")
-        if name_end <= 0:
-            continue
-        name = sig[:name_end].strip()
-        args_and_rest = sig[name_end:]
-        args_end = args_and_rest.find(")")
-        if args_end < 0:
-            continue
-        args_str = args_and_rest[1:args_end].strip()
-        rest = args_and_rest[args_end + 1 :].strip()
-
-        params: list[str] = []
-        if args_str:
-            # Very small parser: split by commas, keep last token as type.
-            for part in args_str.split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                # "a int64" -> type is last token; "[]byte" single token.
-                tokens = part.split()
-                ptype = tokens[-1]
-                params.append(ptype)
-
-        results: list[str] = []
-        if rest:
-            if rest.startswith("(") and rest.endswith(")"):
-                inner = rest[1:-1].strip()
-                if inner:
-                    for part in inner.split(","):
-                        results.append(part.strip().split()[-1])
-            else:
-                results.append(rest.split()[-1])
-
-        if not results:
-            results = []
-
-        funcs.append(ExportedFunc(pkg=pkg, name=name, params=params, results=results))
-    return funcs
 
 
 def _is_supported_type(t: str) -> bool:
@@ -223,10 +163,7 @@ def build_artifact(
 
     module_path = resolved.module_path
     packages = _list_packages(module_dir)
-
-    exported: list[ExportedFunc] = []
-    for pkg in packages:
-        exported.extend(_scan_exported_funcs(module_dir, pkg))
+    exported = scan_exported_funcs(module_dir=module_dir)
 
     exported = [fn for fn in exported if _is_supported_sig(fn)]
 

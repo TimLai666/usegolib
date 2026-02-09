@@ -29,6 +29,10 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    return a + b",
                 "}",
                 "",
+                "func AddGrouped(a, b int64) int64 {",
+                "    return a + b",
+                "}",
+                "",
                 "func SumMap(m map[string]int64) int64 {",
                 "    var s int64",
                 "    for _, v := range m {",
@@ -103,6 +107,7 @@ def test_build_and_call(tmp_path: Path):
 
     h = usegolib.import_("example.com/testmod", artifact_dir=out_dir)
     assert h.AddInt(1, 2) == 3
+    assert h.AddGrouped(10, 20) == 30
     assert h.SumMap({"a": 1, "b": 2}) == 3
     assert h.SumMapSlices({"x": [1, 2], "y": [3]}) == 6
     assert h.ReturnMapBytes() == {"a": b"abc", "b": bytes([0, 1, 2])}

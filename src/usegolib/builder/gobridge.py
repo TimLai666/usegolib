@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .build import ExportedFunc
+from .symbols import ExportedFunc
 
 
 def write_bridge(*, bridge_dir: Path, module_path: str, functions: list[ExportedFunc]) -> None:
