@@ -22,3 +22,17 @@ Those files will be uploaded as GitHub Release assets for the tag.
 
 - This workflow does not publish to PyPI by default.
 - If you need a reproducible build, follow `docs/reproducible-builds.md`.
+
+## Publishing To PyPI (Trusted Publishing)
+
+This repo includes a manual GitHub Actions workflow: `.github/workflows/publish-pypi.yml`.
+
+Setup (one-time):
+- Create the project on PyPI (and optionally TestPyPI) named `usegolib`.
+- In PyPI, configure **Trusted Publishing** for this GitHub repository and allow the workflow `Publish (PyPI)` to publish.
+
+Publish:
+1. Run the GitHub Actions workflow "Publish (PyPI)" (manual dispatch).
+2. Choose `pypi` or `testpypi`.
+
+This uses OIDC (no long-lived API token in GitHub secrets).
