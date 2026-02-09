@@ -66,6 +66,8 @@ def _is_supported_type(t: str, *, struct_types: set[str] | None = None) -> bool:
     }
     if t in scalars:
         return True
+    if t == "time.Time":
+        return True
     if t.startswith("*"):
         return _is_supported_type(t[1:], struct_types=struct_types)
     if t.startswith("[]"):
@@ -183,11 +185,23 @@ def build_artifact(
 
         from .gobridge import write_bridge
 
+        # Adapter types (stdlib or other well-known types) used by supported symbols/structs.
+        adapter_types: set[str] = set()
+        for fn in exported:
+            if "time.Time" in fn.params or "time.Time" in fn.results:
+                adapter_types.add("time.Time")
+        for pkg, by_name in scan.structs_by_pkg.items():
+            for _name, fields in by_name.items():
+                for f in fields:
+                    if f.type == "time.Time":
+                        adapter_types.add("time.Time")
+
         write_bridge(
             bridge_dir=bridge_dir,
             module_path=module_path,
             functions=exported,
             struct_types_by_pkg=scan.struct_types_by_pkg,
+            adapter_types=adapter_types,
         )
 
         goos = _run(["go", "env", "GOOS"], cwd=module_dir).strip()

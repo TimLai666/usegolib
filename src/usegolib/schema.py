@@ -150,6 +150,10 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
         if not isinstance(v, (bytes, bytearray)):
             raise UnsupportedTypeError("expected bytes")
         return
+    if t == "time.Time":
+        if not isinstance(v, str):
+            raise UnsupportedTypeError("expected RFC3339 string")
+        return
 
     if t.startswith("*"):
         if v is None:

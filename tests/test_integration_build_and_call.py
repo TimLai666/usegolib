@@ -23,7 +23,10 @@ def _write_go_test_module(mod_dir: Path) -> None:
             [
                 "package testmod",
                 "",
-                'import "errors"',
+                'import (',
+                '    "errors"',
+                '    "time"',
+                ')',
                 "",
                 "type Person struct {",
                 "    Name string `json:\"name\"`",
@@ -37,6 +40,7 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    Employees []Person",
                 "    VP *Person",
                 "    Teams map[string]Person",
+                "    Founded time.Time `json:\"founded\"`",
                 "}",
                 "",
                 "func MakePerson(name string, age int64) Person {",
@@ -48,11 +52,20 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    vp := Person{Name: \"vp\", Age: 35, Data: []byte(\"vp\"), Meta: map[string]int64{\"age\": 35}}",
                 "    e1 := Person{Name: \"e1\", Age: 20, Data: []byte(\"e1\"), Meta: map[string]int64{\"age\": 20}}",
                 "    e2 := Person{Name: \"e2\", Age: 21, Data: []byte(\"e2\"), Meta: map[string]int64{\"age\": 21}}",
-                "    return Company{CEO: ceo, VP: &vp, Employees: []Person{e1, e2}, Teams: map[string]Person{\"a\": e1}}",
+                "    founded := time.Date(2020, 1, 2, 3, 4, 5, 6, time.UTC)",
+                "    return Company{CEO: ceo, VP: &vp, Employees: []Person{e1, e2}, Teams: map[string]Person{\"a\": e1}, Founded: founded}",
                 "}",
                 "",
                 "func EchoCompany(c Company) Company {",
                 "    return c",
+                "}",
+                "",
+                "func After(t0 time.Time, t1 time.Time) bool {",
+                "    return t1.After(t0)",
+                "}",
+                "",
+                "func AddOneDay(t time.Time) time.Time {",
+                "    return t.Add(24 * time.Hour)",
                 "}",
                 "",
                 "func CountEmployees(cs []Company) int64 {",
@@ -163,19 +176,24 @@ def test_build_and_call(tmp_path: Path):
         ],
         "VP": {"name": "vp", "age": 35, "Data": b"vp", "Meta": {"age": 35}},
         "Teams": {"a": {"name": "e1", "age": 20, "Data": b"e1", "Meta": {"age": 20}}},
+        "founded": "2020-01-02T03:04:05.000000006Z",
     }
+    assert h.After("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z") is True
+    assert h.AddOneDay("2020-01-01T00:00:00Z") == "2020-01-02T00:00:00Z"
     assert h.EchoCompany(
         {
             "ceo": {"name": "x", "age": 1, "Data": b"x", "Meta": {"age": 1}},
             "Employees": [{"name": "y", "age": 2, "Data": b"y", "Meta": {}}],
             "VP": None,
             "Teams": {},
+            "founded": "2020-01-02T03:04:05.000000006Z",
         }
     ) == {
         "ceo": {"name": "x", "age": 1, "Data": b"x", "Meta": {"age": 1}},
         "Employees": [{"name": "y", "age": 2, "Data": b"y", "Meta": {}}],
         "VP": None,
         "Teams": {},
+        "founded": "2020-01-02T03:04:05.000000006Z",
     }
     assert h.CountEmployees(
         [

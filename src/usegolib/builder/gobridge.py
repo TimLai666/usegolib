@@ -11,9 +11,11 @@ def write_bridge(
     module_path: str,
     functions: list[ExportedFunc],
     struct_types_by_pkg: dict[str, set[str]] | None = None,
+    adapter_types: set[str] | None = None,
 ) -> None:
     # Generate a single `main` package for `-buildmode=c-shared`.
     struct_types_by_pkg = struct_types_by_pkg or {}
+    adapter_types = adapter_types or set()
     imports: dict[str, str] = {}
     for fn in functions:
         if fn.pkg not in imports:
@@ -38,6 +40,10 @@ def write_bridge(
         struct_types = struct_types_by_pkg.get(fn.pkg, set())
         if any(_base_type(t) in struct_types for t in fn.params) or any(
             _base_type(t) in struct_types for t in fn.results
+        ):
+            needs_reflect = True
+        if any(_base_type(t) in adapter_types for t in fn.params) or any(
+            _base_type(t) in adapter_types for t in fn.results
         ):
             needs_reflect = True
         wrap_lines.extend(
@@ -182,6 +188,8 @@ def write_bridge(
     ]
     if needs_reflect:
         import_block.append('    "reflect"')
+    if "time.Time" in adapter_types:
+        import_block.append('    "time"')
     for pkg, alias in imports.items():
         import_block.append(f'    {alias} "{pkg}"')
     import_block.append(")")
@@ -200,6 +208,7 @@ def write_bridge(
     helpers = _write_helpers(
         needs_reflect=needs_reflect,
         allowed_struct_type_keys=sorted(allowed_struct_type_keys),
+        adapter_types=sorted(adapter_types),
     )
     bridge_file.write_text(
         src + "\n" + "\n".join(wrap_lines) + "\n" + "\n".join(helpers) + "\n",
@@ -243,7 +252,7 @@ def _write_wrapper(
         lines.append("    return nil, nil")
     elif len(fn.results) == 1:
         lines.append(f"    r0 := {call}")
-        if _base_type(fn.results[0]) in struct_types:
+        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) == "time.Time":
             lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
             lines.append("    if !ok {")
             lines.append(
@@ -259,7 +268,7 @@ def _write_wrapper(
         lines.append("    if err != nil {")
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
-        if _base_type(fn.results[0]) in struct_types:
+        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) == "time.Time":
             lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
             lines.append("    if !ok {")
             lines.append(
@@ -326,6 +335,14 @@ def _write_arg_convert(
         )
 
     if _base_type(go_type) in struct_types:
+        typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
+        lines.append(f"    {var_name}, ok := toGoValue[{typ}]({value_expr})")
+        lines.append("    if !ok {")
+        unsupported()
+        lines.append("    }")
+        return lines
+
+    if _base_type(go_type) == "time.Time":
         typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
         lines.append(f"    {var_name}, ok := toGoValue[{typ}]({value_expr})")
         lines.append("    if !ok {")
@@ -543,7 +560,12 @@ def _write_arg_convert(
     return lines
 
 
-def _write_helpers(*, needs_reflect: bool, allowed_struct_type_keys: list[str]) -> list[str]:
+def _write_helpers(
+    *,
+    needs_reflect: bool,
+    allowed_struct_type_keys: list[str],
+    adapter_types: list[str],
+) -> list[str]:
     out = [
         "func toUnsupported(v any) (any, bool) {",
         "    _ = v",
@@ -907,6 +929,9 @@ def _write_helpers(*, needs_reflect: bool, allowed_struct_type_keys: list[str]) 
     if not needs_reflect:
         return out
 
+    # Ensure adapter types listed are at least referenced so go imports don't get dropped by generator updates.
+    _ = adapter_types
+
     # Embed a whitelist of named struct types we allow to cross the boundary as record structs.
     # This prevents accidentally exporting arbitrary third-party structs (e.g. time.Time) as maps.
     # Note: these types are referenced only by reflection, so this list is sufficient.
@@ -1104,6 +1129,20 @@ def _write_helpers(*, needs_reflect: bool, allowed_struct_type_keys: list[str]) 
             "        }",
             "        return out, true",
             "    case reflect.Struct:",
+            "        // Adapter: time.Time encoded as RFC3339Nano string.",
+            "        if t.PkgPath() == \"time\" && t.Name() == \"Time\" {",
+            "            s, ok := toString(v)",
+            "            if !ok {",
+            "                return reflect.Value{}, false",
+            "            }",
+            "            tt, err := time.Parse(time.RFC3339Nano, s)",
+            "            if err != nil {",
+            "                return reflect.Value{}, false",
+            "            }",
+            "            out := reflect.New(t).Elem()",
+            "            out.Set(reflect.ValueOf(tt))",
+            "            return out, true",
+            "        }",
             "        if !isAllowedStructType(t) {",
             "            return reflect.Value{}, false",
             "        }",
@@ -1196,6 +1235,11 @@ def _write_helpers(*, needs_reflect: bool, allowed_struct_type_keys: list[str]) 
             "        }",
             "        return out, true",
             "    case reflect.Struct:",
+            "        // Adapter: time.Time encoded as RFC3339Nano string.",
+            "        if v.Type().PkgPath() == \"time\" && v.Type().Name() == \"Time\" {",
+            "            tt := v.Interface().(time.Time)",
+            "            return tt.Format(time.RFC3339Nano), true",
+            "        }",
             "        if !isAllowedStructType(v.Type()) {",
             "            return nil, false",
             "        }",
