@@ -22,6 +22,33 @@ jobs:
       - name: Install build tooling
         run: python -m pip install -U pip build
 
+      - name: Verify tag matches pyproject version
+        shell: python
+        run: |
+          import os
+          import re
+          from pathlib import Path
+
+          ref = os.environ.get("GITHUB_REF", "")
+          m = re.fullmatch(r"refs/tags/v(.+)", ref)
+          if not m:
+            raise SystemExit(f"expected tag ref like refs/tags/vX.Y.Z, got: {ref!r}")
+          tag_ver = m.group(1)
+
+          # Minimal parse: read a single `version = "..."` under [project].
+          txt = Path("pyproject.toml").read_text(encoding="utf-8")
+          sec = re.split(r"^\\[project\\]\\s*$", txt, flags=re.M)
+          if len(sec) < 2:
+            raise SystemExit("missing [project] in pyproject.toml")
+          block = sec[1]
+          m2 = re.search(r"^version\\s*=\\s*\"([^\"]+)\"\\s*$", block, flags=re.M)
+          if not m2:
+            raise SystemExit("missing project.version in pyproject.toml")
+          py_ver = m2.group(1)
+
+          if tag_ver != py_ver:
+            raise SystemExit(f"tag version v{tag_ver} != pyproject version {py_ver}")
+
       - name: Install (dev)
         run: python -m pip install -e ".[dev]"
 
@@ -41,4 +68,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-

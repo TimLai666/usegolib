@@ -9,6 +9,7 @@ This repository uses a tag-triggered GitHub Actions workflow to build distributi
 3. Create and push a git tag `v<version>` (e.g. `v0.1.0`).
 
 The `Release` workflow will run:
+- A guardrail check that the pushed tag version matches `pyproject.toml` `project.version`
 - OpenSpec validation
 - Python tests
 - `python -m build` to produce:
@@ -21,4 +22,3 @@ Those files will be uploaded as GitHub Release assets for the tag.
 
 - This workflow does not publish to PyPI by default.
 - If you need a reproducible build, follow `docs/reproducible-builds.md`.
-
