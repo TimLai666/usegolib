@@ -1,8 +1,5 @@
-# usegolib-dev Specification
+## MODIFIED Requirements
 
-## Purpose
-Developer-facing workflows and tooling for this repository (local verification, CI parity, and related utilities).
-## Requirements
 ### Requirement: WSL Linux Test Runner Script
 The repository SHALL include a Windows PowerShell script to run the test suite inside WSL (Linux) for local verification.
 
@@ -33,11 +30,4 @@ For integration runs, the WSL runner SHALL:
 #### Scenario: Expected stderr output does not produce PowerShell error records
 - **WHEN** the WSL test runner executes commands that emit progress logs on stderr (for example tool bootstrap output)
 - **THEN** the script output does not include PowerShell `NativeCommandError` records
-
-### Requirement: Developer Docs Match Current Behavior
-The repository SHALL keep developer-facing documentation aligned with current `usegolib` behavior so users do not rely on outdated assumptions.
-
-#### Scenario: ABI documentation reflects supported types
-- **WHEN** the repository supports Level 2/3 type bridging and typed adapters in v0.x
-- **THEN** `docs/abi.md` describes the supported type levels and their wire encodings
 

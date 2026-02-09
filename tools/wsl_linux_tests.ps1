@@ -20,13 +20,13 @@ function Invoke-WslBash {
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($tmpWin, $Cmd, $utf8NoBom)
   $tmpWsl = Convert-ToWslPath $tmpWin
-  $prev = $ErrorActionPreference
-  $ErrorActionPreference = "Continue"
   try {
-    $out = & wsl.exe -d $Distro -- bash $tmpWsl 2>&1
+    # Windows PowerShell 5.1 can surface native stderr as `NativeCommandError`
+    # records even when the command succeeds. Run via `cmd.exe` and do the
+    # redirection there so PowerShell only receives stdout.
+    $out = & cmd.exe /c wsl.exe -d $Distro -- bash $tmpWsl "2^>^&1"
     $code = $LASTEXITCODE
   } finally {
-    $ErrorActionPreference = $prev
     Remove-Item -Force $tmpWin -ErrorAction SilentlyContinue
   }
   if ($code -ne 0) {
