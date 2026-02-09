@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from ..errors import BuildError
-from .symbols import ExportedFunc, ModuleScan
+from .symbols import ExportedFunc, ModuleScan, StructField
 
 
 def scan_module(*, module_dir: Path) -> ModuleScan:
@@ -74,7 +74,37 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                     continue
                 struct_types_by_pkg[pkg] = {x for x in items if isinstance(x, str)}
 
-        return ModuleScan(funcs=funcs, struct_types_by_pkg=struct_types_by_pkg)
+        structs_by_pkg: dict[str, dict[str, list[StructField]]] = {}
+        sd = obj.get("structs")
+        if isinstance(sd, dict):
+            for pkg, structs in sd.items():
+                if not isinstance(pkg, str) or not isinstance(structs, list):
+                    continue
+                by_name: dict[str, list[StructField]] = {}
+                for s in structs:
+                    if not isinstance(s, dict):
+                        continue
+                    name = s.get("name")
+                    fields = s.get("fields")
+                    if not isinstance(name, str) or not isinstance(fields, list):
+                        continue
+                    out_fields: list[StructField] = []
+                    for f in fields:
+                        if not isinstance(f, dict):
+                            continue
+                        fn = f.get("name")
+                        ft = f.get("type")
+                        if isinstance(fn, str) and isinstance(ft, str) and fn and ft:
+                            out_fields.append(StructField(name=fn, type=ft))
+                    by_name[name] = out_fields
+                if by_name:
+                    structs_by_pkg[pkg] = by_name
+
+        return ModuleScan(
+            funcs=funcs,
+            struct_types_by_pkg=struct_types_by_pkg,
+            structs_by_pkg=structs_by_pkg,
+        )
 
 
 def scan_exported_funcs(*, module_dir: Path) -> list[ExportedFunc]:
@@ -119,6 +149,17 @@ type outFunc struct {
 type outObj struct {
 	Funcs []outFunc `json:"funcs"`
 	StructTypes map[string][]string `json:"struct_types"`
+	Structs map[string][]outStruct `json:"structs"`
+}
+
+type outStructField struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type outStruct struct {
+	Name   string           `json:"name"`
+	Fields []outStructField `json:"fields"`
 }
 
 func main() {
@@ -145,6 +186,7 @@ func main() {
 	out := outObj{
 		Funcs:       make([]outFunc, 0, 128),
 		StructTypes: map[string][]string{},
+		Structs:     map[string][]outStruct{},
 	}
 	for _, p := range pkgs {
 		if isInternalPkg(p.ImportPath) {
@@ -162,12 +204,13 @@ func main() {
 
 		fs := token.NewFileSet()
 		structNames := map[string]bool{}
+		structFields := map[string][]outStructField{}
 		for _, file := range files {
 			af, err := parser.ParseFile(fs, file, nil, 0)
 			if err != nil {
 				continue
 			}
-			collectStructTypes(af, structNames)
+			collectStructTypes(af, structNames, structFields)
 			for _, decl := range af.Decls {
 				fd, ok := decl.(*ast.FuncDecl)
 				if !ok {
@@ -204,6 +247,13 @@ func main() {
 				items = append(items, n)
 			}
 			out.StructTypes[p.ImportPath] = items
+		}
+		if len(structFields) > 0 {
+			items := make([]outStruct, 0, len(structFields))
+			for n, fields := range structFields {
+				items = append(items, outStruct{Name: n, Fields: fields})
+			}
+			out.Structs[p.ImportPath] = items
 		}
 	}
 
@@ -264,7 +314,7 @@ func fieldListTypes(fl *ast.FieldList) []string {
 	return out
 }
 
-func collectStructTypes(af *ast.File, out map[string]bool) {
+func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string][]outStructField) {
 	for _, decl := range af.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || gd.Tok != token.TYPE {
@@ -275,8 +325,31 @@ func collectStructTypes(af *ast.File, out map[string]bool) {
 			if !ok || ts.Name == nil {
 				continue
 			}
-			if _, ok := ts.Type.(*ast.StructType); ok {
+			st, ok := ts.Type.(*ast.StructType)
+			if ok {
 				out[ts.Name.Name] = true
+				if st.Fields != nil {
+					// Record exported fields and their types for schema exchange.
+					fields := []outStructField{}
+					for _, f := range st.Fields.List {
+						if f == nil || f.Type == nil || len(f.Names) == 0 {
+							continue
+						}
+						t := renderType(f.Type)
+						if t == "" {
+							continue
+						}
+						for _, nm := range f.Names {
+							if nm == nil || !nm.IsExported() {
+								continue
+							}
+							fields = append(fields, outStructField{Name: nm.Name, Type: t})
+						}
+					}
+					if len(fields) > 0 {
+						fieldsOut[ts.Name.Name] = fields
+					}
+				}
 			}
 		}
 	}
@@ -311,6 +384,12 @@ func renderType(e ast.Expr) string {
 			return ""
 		}
 		return p + "." + t.Sel.Name
+	case *ast.StarExpr:
+		inner := renderType(t.X)
+		if inner == "" {
+			return ""
+		}
+		return "*" + inner
 	case *ast.ParenExpr:
 		return renderType(t.X)
 	default:

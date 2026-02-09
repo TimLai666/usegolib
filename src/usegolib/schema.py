@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from .errors import UnsupportedTypeError
+
+
+_INT_RANGES = {
+    "int8": (-(2**7), 2**7 - 1),
+    "int16": (-(2**15), 2**15 - 1),
+    "int32": (-(2**31), 2**31 - 1),
+    "int64": (-(2**63), 2**63 - 1),
+    # Treat `int` as 64-bit (CI targets include amd64; this matches our ABI intents for v0).
+    "int": (-(2**63), 2**63 - 1),
+}
+
+
+def _split_prefix(t: str) -> tuple[str, str]:
+    t = t.strip()
+    if t.startswith("*"):
+        return "*", t[1:].strip()
+    if t.startswith("[]"):
+        return "[]", t[2:].strip()
+    if t.startswith("map[string]"):
+        return "map[string]", t[len("map[string]") :].strip()
+    return "", t
+
+
+def _parse_type(t: str) -> tuple[str, list[str]]:
+    t = t.strip()
+    ops: list[str] = []
+    while True:
+        p, rest = _split_prefix(t)
+        if not p:
+            return rest, ops
+        ops.append(p)
+        t = rest
+
+
+@dataclass(frozen=True)
+class Schema:
+    structs_by_pkg: dict[str, dict[str, dict[str, str]]]
+    symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]]
+
+    @classmethod
+    def from_manifest(cls, manifest_schema: dict[str, Any] | None) -> "Schema | None":
+        if not manifest_schema:
+            return None
+        structs: dict[str, dict[str, dict[str, str]]] = {}
+        raw_structs = manifest_schema.get("structs")
+        if isinstance(raw_structs, dict):
+            for pkg, by_name in raw_structs.items():
+                if not isinstance(pkg, str) or not isinstance(by_name, dict):
+                    continue
+                pkg_out: dict[str, dict[str, str]] = {}
+                for name, fields in by_name.items():
+                    if not isinstance(name, str) or not isinstance(fields, list):
+                        continue
+                    field_map: dict[str, str] = {}
+                    for f in fields:
+                        if not isinstance(f, dict):
+                            continue
+                        fn = f.get("name")
+                        ft = f.get("type")
+                        if isinstance(fn, str) and isinstance(ft, str) and fn and ft:
+                            field_map[fn] = ft
+                    if field_map:
+                        pkg_out[name] = field_map
+                if pkg_out:
+                    structs[pkg] = pkg_out
+
+        symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]] = {}
+        raw_symbols = manifest_schema.get("symbols")
+        if isinstance(raw_symbols, list):
+            for s in raw_symbols:
+                if not isinstance(s, dict):
+                    continue
+                pkg = s.get("pkg")
+                name = s.get("name")
+                params = s.get("params")
+                results = s.get("results")
+                if not isinstance(pkg, str) or not isinstance(name, str):
+                    continue
+                if not isinstance(params, list) or not isinstance(results, list):
+                    continue
+                if not all(isinstance(x, str) for x in params) or not all(
+                    isinstance(x, str) for x in results
+                ):
+                    continue
+                symbols_by_pkg.setdefault(pkg, {})[name] = (list(params), list(results))
+
+        return cls(structs_by_pkg=structs, symbols_by_pkg=symbols_by_pkg)
+
+
+def validate_call_args(*, schema: Schema, pkg: str, fn: str, args: list[Any]) -> None:
+    sig = schema.symbols_by_pkg.get(pkg, {}).get(fn)
+    if sig is None:
+        return
+    params, _results = sig
+    if len(args) != len(params):
+        raise UnsupportedTypeError(f"schema: wrong arity (expected {len(params)}, got {len(args)})")
+    for i, (t, v) in enumerate(zip(params, args, strict=True)):
+        try:
+            _validate_value(schema=schema, pkg=pkg, t=t, v=v)
+        except UnsupportedTypeError as e:
+            raise UnsupportedTypeError(f"schema: arg{i} ({t}): {e}") from None
+
+
+def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
+    t = t.strip()
+
+    # Special-case `[]byte`: represented as bytes, not list[int].
+    if t == "[]byte":
+        if not isinstance(v, (bytes, bytearray)):
+            raise UnsupportedTypeError("expected bytes")
+        return
+
+    if t.startswith("*"):
+        if v is None:
+            return
+        _validate_value(schema=schema, pkg=pkg, t=t[1:].strip(), v=v)
+        return
+
+    if t.startswith("[]"):
+        if not isinstance(v, (list, tuple)):
+            raise UnsupportedTypeError("expected list")
+        inner = t[2:].strip()
+        for item in v:
+            _validate_value(schema=schema, pkg=pkg, t=inner, v=item)
+        return
+
+    if t.startswith("map[string]"):
+        if not isinstance(v, dict):
+            raise UnsupportedTypeError("expected dict")
+        if not all(isinstance(k, str) for k in v.keys()):
+            raise UnsupportedTypeError("expected dict with str keys")
+        inner = t[len("map[string]") :].strip()
+        for vv in v.values():
+            _validate_value(schema=schema, pkg=pkg, t=inner, v=vv)
+        return
+
+    # Scalars
+    if t == "bool":
+        if not isinstance(v, bool):
+            raise UnsupportedTypeError("expected bool")
+        return
+    if t == "string":
+        if not isinstance(v, str):
+            raise UnsupportedTypeError("expected str")
+        return
+    if t in _INT_RANGES:
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise UnsupportedTypeError("expected int")
+        lo, hi = _INT_RANGES[t]
+        if v < lo or v > hi:
+            raise UnsupportedTypeError("int out of range")
+        return
+    if t in {"float64", "float32"}:
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            raise UnsupportedTypeError("expected float")
+        return
+
+    # Struct (record)
+    fields = schema.structs_by_pkg.get(pkg, {}).get(t)
+    if fields is None:
+        raise UnsupportedTypeError("unknown type")
+    if v is None:
+        raise UnsupportedTypeError("expected dict")
+    if not isinstance(v, dict):
+        raise UnsupportedTypeError("expected dict")
+    for k in v.keys():
+        if not isinstance(k, str):
+            raise UnsupportedTypeError("expected str keys")
+        if k not in fields:
+            raise UnsupportedTypeError(f"unknown field {k}")
+    for k, vv in v.items():
+        try:
+            _validate_value(schema=schema, pkg=pkg, t=fields[k], v=vv)
+        except UnsupportedTypeError as e:
+            raise UnsupportedTypeError(f"field {k} ({fields[k]}): {e}") from None

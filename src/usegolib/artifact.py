@@ -21,6 +21,7 @@ class ArtifactManifest:
     goarch: str
     packages: list[str]
     symbols: list[dict[str, Any]]
+    schema: dict[str, Any] | None
     library_path: Path
     library_sha256: str
 
@@ -36,6 +37,9 @@ def read_manifest(path_or_dir: Path) -> ArtifactManifest:
 
     obj = json.loads(manifest_path.read_text(encoding="utf-8"))
     lib = obj.get("library") or {}
+    schema = obj.get("schema")
+    if not isinstance(schema, dict):
+        schema = None
     lib_path = Path(lib.get("path", ""))
     if not lib_path.is_absolute():
         lib_path = manifest_path.parent / lib_path
@@ -49,6 +53,7 @@ def read_manifest(path_or_dir: Path) -> ArtifactManifest:
         goarch=str(obj["goarch"]),
         packages=list(obj.get("packages", [])),
         symbols=list(obj.get("symbols", [])),
+        schema=schema,
         library_path=lib_path,
         library_sha256=str(lib.get("sha256", "")),
     )

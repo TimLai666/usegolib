@@ -18,6 +18,7 @@ from .errors import (
     VersionConflictError,
 )
 from .runtime.cbridge import SharedLibClient
+from .schema import Schema, validate_call_args
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class PackageHandle:
     abi_version: int
     package: str
     _client: SharedLibClient
+    _schema: Schema | None = None
 
     @classmethod
     def from_manifest(cls, manifest: ArtifactManifest, *, package: str) -> "PackageHandle":
@@ -57,17 +59,21 @@ class PackageHandle:
             )
             _LOADED_RUNTIMES[manifest.module] = existing
 
+        schema = Schema.from_manifest(manifest.schema)
         return cls(
             module=existing.module,
             version=existing.version,
             abi_version=existing.abi_version,
             package=package,
             _client=existing.client,
+            _schema=schema,
         )
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
         # Treat any missing attribute as a Go function call.
         def _call(*args: Any) -> Any:
+            if self._schema is not None:
+                validate_call_args(schema=self._schema, pkg=self.package, fn=name, args=list(args))
             try:
                 req = abi.encode_call_request(pkg=self.package, fn=name, args=list(args))
             except Exception as e:  # noqa: BLE001 - encode boundary
@@ -94,4 +100,3 @@ class PackageHandle:
             raise UseGoLibError(f"{err.type}: {err.message}")
 
         return _call
-

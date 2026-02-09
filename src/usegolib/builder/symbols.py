@@ -12,6 +12,13 @@ class ExportedFunc:
 
 
 @dataclass(frozen=True)
+class StructField:
+    name: str
+    type: str
+
+
+@dataclass(frozen=True)
 class ModuleScan:
     funcs: list[ExportedFunc]
     struct_types_by_pkg: dict[str, set[str]]
+    structs_by_pkg: dict[str, dict[str, list[StructField]]]

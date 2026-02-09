@@ -253,6 +253,24 @@ def build_artifact(
                     }
                     for fn in exported
                 ],
+                "schema": {
+                    "structs": {
+                        pkg: {
+                            name: [{"name": f.name, "type": f.type} for f in fields]
+                            for name, fields in scan.structs_by_pkg.get(pkg, {}).items()
+                        }
+                        for pkg in sorted(scan.structs_by_pkg.keys())
+                    },
+                    "symbols": [
+                        {
+                            "pkg": fn.pkg,
+                            "name": fn.name,
+                            "params": fn.params,
+                            "results": fn.results,
+                        }
+                        for fn in exported
+                    ],
+                },
                 "library": {"path": lib_name, "sha256": sha},
             }
             if expected_fp is not None:
