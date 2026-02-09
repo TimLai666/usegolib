@@ -40,6 +40,13 @@ h = usegolib.import_("example.com/mod", artifact_dir="out/artifact")
 print(h.AddInt(1, 2))
 ```
 
+Typed wrappers (when schema is present in the artifact manifest):
+
+```python
+th = h.typed()
+print(th.AddInt(1, 2))
+```
+
 ## Quickstart (generate a distributable Python package project)
 
 ```bash
@@ -61,4 +68,4 @@ print(mypkg.AddInt(1, 2))
 
 - One Go module = one version per Python process
 - If a module is already loaded, all subpackages must use the same version
-- `version=None` defaults to `@latest` (when version resolution is enabled)
+- If `version=None` and multiple artifact versions exist under `artifact_dir`, import fails with `AmbiguousArtifactError`

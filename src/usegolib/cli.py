@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 from pathlib import Path
 
 
@@ -36,7 +37,11 @@ def main() -> None:
 
     args = parser.parse_args()
     if args.cmd == "version":
-        print("0.0.0")
+        try:
+            print(importlib.metadata.version("usegolib"))
+        except Exception:
+            # Best-effort fallback for editable/local-only contexts.
+            print("0.0.0")
         return
 
     if args.cmd == "build":

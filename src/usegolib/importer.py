@@ -16,8 +16,9 @@ def import_(
 ):
     """Import a Go module by loading a prebuilt artifact.
 
-    For v0, this function requires a prebuilt artifact to exist on disk unless
-    `build_if_missing=True` is used (builder is implemented in later milestones).
+    By default, this function requires a prebuilt artifact to exist on disk.
+    In development workflows, `build_if_missing=True` can be used to build into
+    `artifact_dir` and then import the newly built artifact.
     """
     from .artifact import resolve_manifest
     from .handle import PackageHandle
