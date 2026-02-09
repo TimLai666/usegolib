@@ -5,8 +5,15 @@ from pathlib import Path
 from .symbols import ExportedFunc
 
 
-def write_bridge(*, bridge_dir: Path, module_path: str, functions: list[ExportedFunc]) -> None:
+def write_bridge(
+    *,
+    bridge_dir: Path,
+    module_path: str,
+    functions: list[ExportedFunc],
+    struct_types_by_pkg: dict[str, set[str]] | None = None,
+) -> None:
     # Generate a single `main` package for `-buildmode=c-shared`.
+    struct_types_by_pkg = struct_types_by_pkg or {}
     imports: dict[str, str] = {}
     for fn in functions:
         if fn.pkg not in imports:
@@ -16,13 +23,24 @@ def write_bridge(*, bridge_dir: Path, module_path: str, functions: list[Exported
     reg_lines: list[str] = []
     wrap_lines: list[str] = []
 
+    needs_reflect = False
     for fn in functions:
         alias = imports[fn.pkg]
         key = f"{fn.pkg}:{fn.name}"
         wrap_name = f"wrap_{alias}_{fn.name}"
 
         reg_lines.append(f'        "{key}": {wrap_name},')
-        wrap_lines.extend(_write_wrapper(wrap_name=wrap_name, alias=alias, fn=fn))
+        struct_types = struct_types_by_pkg.get(fn.pkg, set())
+        if any(t in struct_types for t in fn.params) or any(t in struct_types for t in fn.results):
+            needs_reflect = True
+        wrap_lines.extend(
+            _write_wrapper(
+                wrap_name=wrap_name,
+                alias=alias,
+                fn=fn,
+                struct_types=struct_types,
+            )
+        )
         wrap_lines.append("")
 
     src = "\n".join(
@@ -57,7 +75,7 @@ def write_bridge(*, bridge_dir: Path, module_path: str, functions: list[Exported
             "",
             "type Response struct {",
             '    Ok bool `msgpack:"ok"`',
-            '    Result any `msgpack:"result,omitempty"`',
+            '    Result any `msgpack:"result"`',
             '    Error *ErrorObj `msgpack:"error,omitempty"`',
             "}",
             "",
@@ -149,7 +167,14 @@ def write_bridge(*, bridge_dir: Path, module_path: str, functions: list[Exported
 
     # We need to insert Go imports for target packages; easiest is to regenerate
     # file with a proper import block.
-    import_block = ["import (", '    "unsafe"', "", '    "github.com/vmihailenco/msgpack/v5"']
+    import_block = [
+        "import (",
+        '    "unsafe"',
+        "",
+        '    "github.com/vmihailenco/msgpack/v5"',
+    ]
+    if needs_reflect:
+        import_block.append('    "reflect"')
     for pkg, alias in imports.items():
         import_block.append(f'    {alias} "{pkg}"')
     import_block.append(")")
@@ -165,14 +190,20 @@ def write_bridge(*, bridge_dir: Path, module_path: str, functions: list[Exported
     )
 
     bridge_file = bridge_dir / "bridge_gen.go"
-    helpers = _write_helpers()
+    helpers = _write_helpers(needs_reflect=needs_reflect)
     bridge_file.write_text(
         src + "\n" + "\n".join(wrap_lines) + "\n" + "\n".join(helpers) + "\n",
         encoding="utf-8",
     )
 
 
-def _write_wrapper(*, wrap_name: str, alias: str, fn: ExportedFunc) -> list[str]:
+def _write_wrapper(
+    *,
+    wrap_name: str,
+    alias: str,
+    fn: ExportedFunc,
+    struct_types: set[str],
+) -> list[str]:
     # Only support a small set of v0 types.
     lines: list[str] = []
     lines.append(f"func {wrap_name}(args []any) (any, *ErrorObj) {{")
@@ -186,7 +217,15 @@ def _write_wrapper(*, wrap_name: str, alias: str, fn: ExportedFunc) -> list[str]
     for i, t in enumerate(fn.params):
         vn = f"a{i}"
         arg_names.append(vn)
-        lines.extend(_write_arg_convert(var_name=vn, go_type=t, value_expr=f"args[{i}]"))
+        lines.extend(
+            _write_arg_convert(
+                var_name=vn,
+                go_type=t,
+                value_expr=f"args[{i}]",
+                pkg_alias=alias,
+                struct_types=struct_types,
+            )
+        )
 
     call = f"{alias}.{fn.name}({', '.join(arg_names)})"
     if len(fn.results) == 0:
@@ -194,14 +233,32 @@ def _write_wrapper(*, wrap_name: str, alias: str, fn: ExportedFunc) -> list[str]
         lines.append("    return nil, nil")
     elif len(fn.results) == 1:
         lines.append(f"    r0 := {call}")
-        lines.append("    return r0, nil")
+        if fn.results[0] in struct_types:
+            lines.append("    m0, ok := fromStruct(r0)")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return m0, nil")
+        else:
+            lines.append("    return r0, nil")
     else:
         # (T, error)
         lines.append(f"    r0, err := {call}")
         lines.append("    if err != nil {")
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
-        lines.append("    return r0, nil")
+        if fn.results[0] in struct_types:
+            lines.append("    m0, ok := fromStruct(r0)")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return m0, nil")
+        else:
+            lines.append("    return r0, nil")
 
     lines.append("}")
     return lines
@@ -211,13 +268,28 @@ def _conv_expr(go_type: str, v: str) -> str:
     raise AssertionError(f"unexpected: {_conv_expr.__name__} called for {go_type}/{v}")
 
 
-def _write_arg_convert(*, var_name: str, go_type: str, value_expr: str) -> list[str]:
+def _write_arg_convert(
+    *,
+    var_name: str,
+    go_type: str,
+    value_expr: str,
+    pkg_alias: str,
+    struct_types: set[str],
+) -> list[str]:
     lines: list[str] = []
 
     def unsupported() -> None:
         lines.append(
             '    return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}'
         )
+
+    if go_type in struct_types:
+        typ = f"{pkg_alias}.{go_type}"
+        lines.append(f"    {var_name}, ok := toStruct[{typ}]({value_expr})")
+        lines.append("    if !ok {")
+        unsupported()
+        lines.append("    }")
+        return lines
 
     if go_type.startswith("map[string]"):
         vt = go_type[len("map[string]") :]
@@ -429,8 +501,8 @@ def _write_arg_convert(*, var_name: str, go_type: str, value_expr: str) -> list[
     return lines
 
 
-def _write_helpers() -> list[str]:
-    return [
+def _write_helpers(*, needs_reflect: bool) -> list[str]:
+    out = [
         "func toUnsupported(v any) (any, bool) {",
         "    _ = v",
         "    return nil, false",
@@ -789,3 +861,194 @@ def _write_helpers() -> list[str]:
         "    return out, true",
         "}",
     ]
+
+    if not needs_reflect:
+        return out
+
+    out.extend(
+        [
+            "",
+            "func toStruct[T any](v any) (T, bool) {",
+            "    var out T",
+            "    rv := reflect.ValueOf(&out).Elem()",
+            "    if rv.Kind() != reflect.Struct {",
+            "        return out, false",
+            "    }",
+            "    m, ok := toAnyMap(v)",
+            "    if !ok {",
+            "        return out, false",
+            "    }",
+            "    rt := rv.Type()",
+            "    for k, vv := range m {",
+            "        sf, ok := rt.FieldByName(k)",
+            "        if !ok || sf.PkgPath != \"\" {",
+            "            return out, false",
+            "        }",
+            "        fv := rv.FieldByIndex(sf.Index)",
+            "        if !fv.CanSet() {",
+            "            return out, false",
+            "        }",
+            "        cv, ok := convertToType(vv, fv.Type())",
+            "        if !ok {",
+            "            return out, false",
+            "        }",
+            "        fv.Set(cv)",
+            "    }",
+            "    return out, true",
+            "}",
+            "",
+            "func fromStruct(v any) (map[string]any, bool) {",
+            "    rv := reflect.ValueOf(v)",
+            "    if rv.Kind() == reflect.Ptr {",
+            "        rv = rv.Elem()",
+            "    }",
+            "    if rv.Kind() != reflect.Struct {",
+            "        return nil, false",
+            "    }",
+            "    rt := rv.Type()",
+            "    out := map[string]any{}",
+            "    for i := 0; i < rt.NumField(); i++ {",
+            "        sf := rt.Field(i)",
+            "        if sf.PkgPath != \"\" {",
+            "            continue",
+            "        }",
+            "        av, ok := exportAny(rv.Field(i))",
+            "        if !ok {",
+            "            return nil, false",
+            "        }",
+            "        out[sf.Name] = av",
+            "    }",
+            "    return out, true",
+            "}",
+            "",
+            "func convertToType(v any, t reflect.Type) (reflect.Value, bool) {",
+            "    switch t.Kind() {",
+            "    case reflect.Bool:",
+            "        b, ok := toBool(v)",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.New(t).Elem()",
+            "        out.SetBool(b)",
+            "        return out, true",
+            "    case reflect.String:",
+            "        s, ok := toString(v)",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.New(t).Elem()",
+            "        out.SetString(s)",
+            "        return out, true",
+            "    case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:",
+            "        n, ok := toInt64(v)",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.New(t).Elem()",
+            "        out.SetInt(n)",
+            "        return out, true",
+            "    case reflect.Float32, reflect.Float64:",
+            "        f, ok := toFloat64(v)",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.New(t).Elem()",
+            "        out.SetFloat(f)",
+            "        return out, true",
+            "    case reflect.Slice:",
+            "        // Special-case []byte",
+            "        if t.Elem().Kind() == reflect.Uint8 {",
+            "            b, ok := toBytes(v)",
+            "            if !ok {",
+            "                return reflect.Value{}, false",
+            "            }",
+            "            out := reflect.New(t).Elem()",
+            "            out.SetBytes(b)",
+            "            return out, true",
+            "        }",
+            "        xs, ok := toAnySlice(v)",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.MakeSlice(t, 0, len(xs))",
+            "        for _, item := range xs {",
+            "            cv, ok := convertToType(item, t.Elem())",
+            "            if !ok {",
+            "                return reflect.Value{}, false",
+            "            }",
+            "            out = reflect.Append(out, cv)",
+            "        }",
+            "        return out, true",
+            "    case reflect.Map:",
+            "        if t.Key().Kind() != reflect.String {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        m, ok := toAnyMap(v)",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.MakeMapWithSize(t, len(m))",
+            "        for k, vv := range m {",
+            "            cv, ok := convertToType(vv, t.Elem())",
+            "            if !ok {",
+            "                return reflect.Value{}, false",
+            "            }",
+            "            out.SetMapIndex(reflect.ValueOf(k), cv)",
+            "        }",
+            "        return out, true",
+            "    case reflect.Struct:",
+            "        // Phase A: no nested structs.",
+            "        return reflect.Value{}, false",
+            "    default:",
+            "        return reflect.Value{}, false",
+            "    }",
+            "}",
+            "",
+            "func exportAny(v reflect.Value) (any, bool) {",
+            "    if v.Kind() == reflect.Ptr {",
+            "        if v.IsNil() {",
+            "            return nil, true",
+            "        }",
+            "        v = v.Elem()",
+            "    }",
+            "    switch v.Kind() {",
+            "    case reflect.Bool, reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float32, reflect.Float64:",
+            "        return v.Interface(), true",
+            "    case reflect.Slice:",
+            "        if v.Type().Elem().Kind() == reflect.Uint8 {",
+            "            return v.Bytes(), true",
+            "        }",
+            "        out := make([]any, 0, v.Len())",
+            "        for i := 0; i < v.Len(); i++ {",
+            "            item, ok := exportAny(v.Index(i))",
+            "            if !ok {",
+            "                return nil, false",
+            "            }",
+            "            out = append(out, item)",
+            "        }",
+            "        return out, true",
+            "    case reflect.Map:",
+            "        if v.Type().Key().Kind() != reflect.String {",
+            "            return nil, false",
+            "        }",
+            "        out := make(map[string]any, v.Len())",
+            "        for _, k := range v.MapKeys() {",
+            "            kv := k.Interface().(string)",
+            "            item, ok := exportAny(v.MapIndex(k))",
+            "            if !ok {",
+            "                return nil, false",
+            "            }",
+            "            out[kv] = item",
+            "        }",
+            "        return out, true",
+            "    case reflect.Struct:",
+            "        // Phase A: no nested structs.",
+            "        return nil, false",
+            "    default:",
+            "        return nil, false",
+            "    }",
+            "}",
+        ]
+    )
+
+    return out

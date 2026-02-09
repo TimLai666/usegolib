@@ -25,6 +25,25 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "",
                 'import "errors"',
                 "",
+                "type Person struct {",
+                "    Name string",
+                "    Age int64",
+                "    Data []byte",
+                "    Meta map[string]int64",
+                "}",
+                "",
+                "func MakePerson(name string, age int64) Person {",
+                "    return Person{Name: name, Age: age, Data: []byte(name), Meta: map[string]int64{\"age\": age}}",
+                "}",
+                "",
+                "func EchoPerson(p Person) Person {",
+                "    return p",
+                "}",
+                "",
+                "func IsAdult(p Person) bool {",
+                "    return p.Age >= 18",
+                "}",
+                "",
                 "func AddInt(a int64, b int64) int64 {",
                 "    return a + b",
                 "}",
@@ -108,6 +127,15 @@ def test_build_and_call(tmp_path: Path):
     h = usegolib.import_("example.com/testmod", artifact_dir=out_dir)
     assert h.AddInt(1, 2) == 3
     assert h.AddGrouped(10, 20) == 30
+    assert h.MakePerson("bob", 20) == {"Name": "bob", "Age": 20, "Data": b"bob", "Meta": {"age": 20}}
+    assert h.EchoPerson({"Name": "alice", "Age": 17, "Data": b"x", "Meta": {"age": 17}}) == {
+        "Name": "alice",
+        "Age": 17,
+        "Data": b"x",
+        "Meta": {"age": 17},
+    }
+    assert h.IsAdult({"Name": "z", "Age": 18, "Data": b"", "Meta": {}}) is True
+    assert h.IsAdult({"Name": "z"}) is False
     assert h.SumMap({"a": 1, "b": 2}) == 3
     assert h.SumMapSlices({"x": [1, 2], "y": [3]}) == 6
     assert h.ReturnMapBytes() == {"a": b"abc", "b": bytes([0, 1, 2])}

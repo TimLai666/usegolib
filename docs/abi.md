@@ -43,7 +43,7 @@ All responses are MessagePack maps:
 
 - `ok`: boolean
 - If `ok == true`:
-  - `result`: the return value (or `nil` for void)
+  - `result`: the return value (or `nil` for void). This field is always present when `ok == true`.
 - If `ok == false`:
   - `error`: error object
 
@@ -66,4 +66,3 @@ Supported values crossing the ABI:
 - slices/lists of the above (including lists of bytes)
 
 Unsupported values MUST fail with `UnsupportedTypeError`.
-

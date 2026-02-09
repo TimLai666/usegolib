@@ -6,10 +6,10 @@ import tempfile
 from pathlib import Path
 
 from ..errors import BuildError
-from .symbols import ExportedFunc
+from .symbols import ExportedFunc, ModuleScan
 
 
-def scan_exported_funcs(*, module_dir: Path) -> list[ExportedFunc]:
+def scan_module(*, module_dir: Path) -> ModuleScan:
     """Scan exported top-level functions by parsing Go source (not `go doc` text).
 
     This is used by the builder to decide which functions are callable through the
@@ -65,7 +65,20 @@ def scan_exported_funcs(*, module_dir: Path) -> list[ExportedFunc]:
             if not all(isinstance(t, str) for t in results):
                 continue
             funcs.append(ExportedFunc(pkg=pkg, name=name, params=list(params), results=list(results)))
-        return funcs
+
+        struct_types_by_pkg: dict[str, set[str]] = {}
+        st = obj.get("struct_types")
+        if isinstance(st, dict):
+            for pkg, items in st.items():
+                if not isinstance(pkg, str) or not isinstance(items, list):
+                    continue
+                struct_types_by_pkg[pkg] = {x for x in items if isinstance(x, str)}
+
+        return ModuleScan(funcs=funcs, struct_types_by_pkg=struct_types_by_pkg)
+
+
+def scan_exported_funcs(*, module_dir: Path) -> list[ExportedFunc]:
+    return scan_module(module_dir=module_dir).funcs
 
 
 def _scanner_go_source() -> str:
@@ -105,6 +118,7 @@ type outFunc struct {
 
 type outObj struct {
 	Funcs []outFunc `json:"funcs"`
+	StructTypes map[string][]string `json:"struct_types"`
 }
 
 func main() {
@@ -128,7 +142,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	out := outObj{Funcs: make([]outFunc, 0, 128)}
+	out := outObj{
+		Funcs:       make([]outFunc, 0, 128),
+		StructTypes: map[string][]string{},
+	}
 	for _, p := range pkgs {
 		if isInternalPkg(p.ImportPath) {
 			continue
@@ -144,11 +161,13 @@ func main() {
 		}
 
 		fs := token.NewFileSet()
+		structNames := map[string]bool{}
 		for _, file := range files {
 			af, err := parser.ParseFile(fs, file, nil, 0)
 			if err != nil {
 				continue
 			}
+			collectStructTypes(af, structNames)
 			for _, decl := range af.Decls {
 				fd, ok := decl.(*ast.FuncDecl)
 				if !ok {
@@ -178,6 +197,13 @@ func main() {
 					Results: results,
 				})
 			}
+		}
+		if len(structNames) > 0 {
+			items := make([]string, 0, len(structNames))
+			for n := range structNames {
+				items = append(items, n)
+			}
+			out.StructTypes[p.ImportPath] = items
 		}
 	}
 
@@ -236,6 +262,24 @@ func fieldListTypes(fl *ast.FieldList) []string {
 		}
 	}
 	return out
+}
+
+func collectStructTypes(af *ast.File, out map[string]bool) {
+	for _, decl := range af.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name == nil {
+				continue
+			}
+			if _, ok := ts.Type.(*ast.StructType); ok {
+				out[ts.Name.Name] = true
+			}
+		}
+	}
 }
 
 func renderType(e ast.Expr) string {

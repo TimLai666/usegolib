@@ -13,7 +13,7 @@ from .fingerprint import fingerprint_local_module_dir
 from .lock import leaf_lock
 from .resolve import resolve_module_target
 from .reuse import artifact_ready
-from .scan import scan_exported_funcs
+from .scan import scan_module
 from .symbols import ExportedFunc
 from .zig import ensure_zig
 
@@ -51,7 +51,7 @@ def _list_packages(module_dir: Path) -> list[str]:
     return [p for p in pkgs if "/internal/" not in p and not p.endswith("/internal")]
 
 
-def _is_supported_type(t: str) -> bool:
+def _is_supported_type(t: str, *, struct_types: set[str] | None = None) -> bool:
     scalars = {
         "bool",
         "string",
@@ -77,13 +77,15 @@ def _is_supported_type(t: str) -> bool:
     if t.startswith("map[string]"):
         vt = t[len("map[string]") :]
         return vt in scalars or vt in slices
+    if struct_types and t in struct_types:
+        return True
     return False
 
 
-def _is_supported_sig(fn: ExportedFunc) -> bool:
-    if any(not _is_supported_type(t) for t in fn.params):
+def _is_supported_sig(fn: ExportedFunc, *, struct_types: set[str] | None = None) -> bool:
+    if any(not _is_supported_type(t, struct_types=struct_types) for t in fn.params):
         return False
-    if any(not _is_supported_type(t) and t != "error" for t in fn.results):
+    if any(not _is_supported_type(t, struct_types=struct_types) and t != "error" for t in fn.results):
         return False
     if len(fn.results) > 2:
         return False
@@ -163,9 +165,14 @@ def build_artifact(
 
     module_path = resolved.module_path
     packages = _list_packages(module_dir)
-    exported = scan_exported_funcs(module_dir=module_dir)
+    scan = scan_module(module_dir=module_dir)
+    exported = scan.funcs
 
-    exported = [fn for fn in exported if _is_supported_sig(fn)]
+    exported = [
+        fn
+        for fn in exported
+        if _is_supported_sig(fn, struct_types=scan.struct_types_by_pkg.get(fn.pkg))
+    ]
 
     with tempfile.TemporaryDirectory(prefix="usegolib-bridge-") as td:
         bridge_dir = Path(td)
@@ -179,7 +186,12 @@ def build_artifact(
 
         from .gobridge import write_bridge
 
-        write_bridge(bridge_dir=bridge_dir, module_path=module_path, functions=exported)
+        write_bridge(
+            bridge_dir=bridge_dir,
+            module_path=module_path,
+            functions=exported,
+            struct_types_by_pkg=scan.struct_types_by_pkg,
+        )
 
         goos = _run(["go", "env", "GOOS"], cwd=module_dir).strip()
         goarch = _run(["go", "env", "GOARCH"], cwd=module_dir).strip()

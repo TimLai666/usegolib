@@ -10,3 +10,8 @@ class ExportedFunc:
     params: list[str]
     results: list[str]
 
+
+@dataclass(frozen=True)
+class ModuleScan:
+    funcs: list[ExportedFunc]
+    struct_types_by_pkg: dict[str, set[str]]
