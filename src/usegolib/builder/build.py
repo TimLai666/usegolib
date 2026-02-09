@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import BuildError
+from .fingerprint import fingerprint_local_module_dir
 from .lock import leaf_lock
 from .resolve import resolve_module_target
 from .reuse import artifact_ready
@@ -250,7 +251,11 @@ def build_artifact(
 
         lock_path = out_leaf / ".usegolib.lock"
         with leaf_lock(lock_path):
-            if not force and artifact_ready(out_leaf):
+            expected_fp: str | None = None
+            if artifact_version == "local":
+                expected_fp = fingerprint_local_module_dir(module_dir)
+
+            if not force and artifact_ready(out_leaf, expected_input_fingerprint=expected_fp):
                 return out_leaf / "manifest.json"
 
             lib_name = f"libusegolib{_go_ext()}"
@@ -271,31 +276,34 @@ def build_artifact(
                 env=env,
             )
 
-    sha = _sha256_file(lib_path)
-    go_version = _run(["go", "version"], cwd=module_dir).strip()
-    zig_version = _run([str(zig), "version"], cwd=module_dir).strip()
+            sha = _sha256_file(lib_path)
+            go_version = _run(["go", "version"], cwd=module_dir).strip()
+            zig_version = _run([str(zig), "version"], cwd=module_dir).strip()
 
-    manifest = {
-        "manifest_version": 1,
-        "abi_version": 0,
-        "module": module_path,
-        "version": artifact_version,
-        "goos": goos,
-        "goarch": goarch,
-        "go_version": go_version,
-        "zig_version": zig_version,
-        "packages": packages,
-        "symbols": [
-            {
-                "pkg": fn.pkg,
-                "name": fn.name,
-                "params": fn.params,
-                "results": fn.results,
+            manifest = {
+                "manifest_version": 1,
+                "abi_version": 0,
+                "module": module_path,
+                "version": artifact_version,
+                "goos": goos,
+                "goarch": goarch,
+                "go_version": go_version,
+                "zig_version": zig_version,
+                "packages": packages,
+                "symbols": [
+                    {
+                        "pkg": fn.pkg,
+                        "name": fn.name,
+                        "params": fn.params,
+                        "results": fn.results,
+                    }
+                    for fn in exported
+                ],
+                "library": {"path": lib_name, "sha256": sha},
             }
-            for fn in exported
-        ],
-        "library": {"path": lib_name, "sha256": sha},
-    }
-    manifest_path = out_leaf / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest_path
+            if expected_fp is not None:
+                manifest["input_fingerprint"] = expected_fp
+
+            manifest_path = out_leaf / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            return manifest_path
