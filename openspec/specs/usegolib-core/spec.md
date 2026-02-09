@@ -367,6 +367,11 @@ The index MUST NOT change the import resolution semantics: if a matching artifac
 - **THEN** the runtime falls back to scanning and rebuilds the index
 - **AND THEN** the import resolution behavior is unchanged
 
+#### Scenario: Stale index does not hide ambiguity
+- **WHEN** the artifact root contains an index that was created before a second version of an artifact was added
+- **AND WHEN** Python imports with `version=None`
+- **THEN** the import MUST still be ambiguous
+
 ### Requirement: Zig Download Verification (V0.x)
 When bootstrapping Zig automatically, the builder SHALL verify the Zig download integrity and SHALL extract archives safely.
 

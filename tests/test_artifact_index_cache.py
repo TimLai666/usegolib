@@ -95,3 +95,18 @@ def test_new_manifest_after_index_is_discovered(tmp_path: Path):
 
     m = resolve_manifest(tmp_path, package="example.com/mod", version="v2.0.0")
     assert m.version == "v2.0.0"
+
+
+def test_index_does_not_hide_ambiguity_when_version_omitted(tmp_path: Path):
+    from usegolib.artifact import resolve_manifest
+    from usegolib.errors import AmbiguousArtifactError
+
+    _write_artifact(tmp_path / "a", module="example.com/mod", version="v1.0.0")
+    resolve_manifest(tmp_path, package="example.com/mod", version="v1.0.0")
+    assert (tmp_path / ".usegolib-index.json").exists()
+
+    # Add another version after the index was created.
+    _write_artifact(tmp_path / "b", module="example.com/mod", version="v2.0.0")
+
+    with pytest.raises(AmbiguousArtifactError):
+        resolve_manifest(tmp_path, package="example.com/mod", version=None)

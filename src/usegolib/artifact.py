@@ -213,15 +213,19 @@ def resolve_manifest(
     goarch = host_goarch()
 
     candidates: list[ArtifactManifest] = []
-    candidates.extend(
-        _resolve_from_index(
-            Path(artifact_root),
-            package=package,
-            version=version,
-            goos=goos,
-            goarch=goarch,
+    # Index is a performance optimization. For `version=None`, correctness matters
+    # more than speed: a stale index could hide ambiguity. In that case, fall back
+    # to scan-based resolution.
+    if version is not None:
+        candidates.extend(
+            _resolve_from_index(
+                Path(artifact_root),
+                package=package,
+                version=version,
+                goos=goos,
+                goarch=goarch,
+            )
         )
-    )
 
     if not candidates:
         # Fallback: scan the directory and rebuild the index.
