@@ -32,8 +32,35 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    Meta map[string]int64",
                 "}",
                 "",
+                "type Company struct {",
+                "    CEO Person",
+                "    Employees []Person",
+                "    VP *Person",
+                "    Teams map[string]Person",
+                "}",
+                "",
                 "func MakePerson(name string, age int64) Person {",
                 "    return Person{Name: name, Age: age, Data: []byte(name), Meta: map[string]int64{\"age\": age}}",
+                "}",
+                "",
+                "func MakeCompany() Company {",
+                "    ceo := Person{Name: \"ceo\", Age: 40, Data: []byte(\"ceo\"), Meta: map[string]int64{\"age\": 40}}",
+                "    vp := Person{Name: \"vp\", Age: 35, Data: []byte(\"vp\"), Meta: map[string]int64{\"age\": 35}}",
+                "    e1 := Person{Name: \"e1\", Age: 20, Data: []byte(\"e1\"), Meta: map[string]int64{\"age\": 20}}",
+                "    e2 := Person{Name: \"e2\", Age: 21, Data: []byte(\"e2\"), Meta: map[string]int64{\"age\": 21}}",
+                "    return Company{CEO: ceo, VP: &vp, Employees: []Person{e1, e2}, Teams: map[string]Person{\"a\": e1}}",
+                "}",
+                "",
+                "func EchoCompany(c Company) Company {",
+                "    return c",
+                "}",
+                "",
+                "func CountEmployees(cs []Company) int64 {",
+                "    var n int64",
+                "    for _, c := range cs {",
+                "        n += int64(len(c.Employees))",
+                "    }",
+                "    return n",
                 "}",
                 "",
                 "func EchoPerson(p Person) Person {",
@@ -128,6 +155,38 @@ def test_build_and_call(tmp_path: Path):
     assert h.AddInt(1, 2) == 3
     assert h.AddGrouped(10, 20) == 30
     assert h.MakePerson("bob", 20) == {"Name": "bob", "Age": 20, "Data": b"bob", "Meta": {"age": 20}}
+    assert h.MakeCompany() == {
+        "CEO": {"Name": "ceo", "Age": 40, "Data": b"ceo", "Meta": {"age": 40}},
+        "Employees": [
+            {"Name": "e1", "Age": 20, "Data": b"e1", "Meta": {"age": 20}},
+            {"Name": "e2", "Age": 21, "Data": b"e2", "Meta": {"age": 21}},
+        ],
+        "VP": {"Name": "vp", "Age": 35, "Data": b"vp", "Meta": {"age": 35}},
+        "Teams": {"a": {"Name": "e1", "Age": 20, "Data": b"e1", "Meta": {"age": 20}}},
+    }
+    assert h.EchoCompany(
+        {
+            "CEO": {"Name": "x", "Age": 1, "Data": b"x", "Meta": {"age": 1}},
+            "Employees": [{"Name": "y", "Age": 2, "Data": b"y", "Meta": {}}],
+            "VP": None,
+            "Teams": {},
+        }
+    ) == {
+        "CEO": {"Name": "x", "Age": 1, "Data": b"x", "Meta": {"age": 1}},
+        "Employees": [{"Name": "y", "Age": 2, "Data": b"y", "Meta": {}}],
+        "VP": None,
+        "Teams": {},
+    }
+    assert h.CountEmployees(
+        [
+            {
+                "CEO": {"Name": "x", "Age": 1, "Data": b"x", "Meta": {}},
+                "Employees": [{"Name": "y", "Age": 2, "Data": b"y", "Meta": {}}],
+                "VP": None,
+                "Teams": {},
+            }
+        ]
+    ) == 1
     assert h.EchoPerson({"Name": "alice", "Age": 17, "Data": b"x", "Meta": {"age": 17}}) == {
         "Name": "alice",
         "Age": 17,

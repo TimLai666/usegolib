@@ -24,6 +24,11 @@ def write_bridge(
     wrap_lines: list[str] = []
 
     needs_reflect = False
+    allowed_struct_type_keys: set[str] = set()
+    for pkg, names in struct_types_by_pkg.items():
+        for n in names:
+            allowed_struct_type_keys.add(f"{pkg}.{n}")
+
     for fn in functions:
         alias = imports[fn.pkg]
         key = f"{fn.pkg}:{fn.name}"
@@ -31,7 +36,9 @@ def write_bridge(
 
         reg_lines.append(f'        "{key}": {wrap_name},')
         struct_types = struct_types_by_pkg.get(fn.pkg, set())
-        if any(t in struct_types for t in fn.params) or any(t in struct_types for t in fn.results):
+        if any(_base_type(t) in struct_types for t in fn.params) or any(
+            _base_type(t) in struct_types for t in fn.results
+        ):
             needs_reflect = True
         wrap_lines.extend(
             _write_wrapper(
@@ -190,7 +197,10 @@ def write_bridge(
     )
 
     bridge_file = bridge_dir / "bridge_gen.go"
-    helpers = _write_helpers(needs_reflect=needs_reflect)
+    helpers = _write_helpers(
+        needs_reflect=needs_reflect,
+        allowed_struct_type_keys=sorted(allowed_struct_type_keys),
+    )
     bridge_file.write_text(
         src + "\n" + "\n".join(wrap_lines) + "\n" + "\n".join(helpers) + "\n",
         encoding="utf-8",
@@ -233,14 +243,14 @@ def _write_wrapper(
         lines.append("    return nil, nil")
     elif len(fn.results) == 1:
         lines.append(f"    r0 := {call}")
-        if fn.results[0] in struct_types:
-            lines.append("    m0, ok := fromStruct(r0)")
+        if _base_type(fn.results[0]) in struct_types:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
             lines.append("    if !ok {")
             lines.append(
                 '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
             )
             lines.append("    }")
-            lines.append("    return m0, nil")
+            lines.append("    return v0, nil")
         else:
             lines.append("    return r0, nil")
     else:
@@ -249,14 +259,14 @@ def _write_wrapper(
         lines.append("    if err != nil {")
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
-        if fn.results[0] in struct_types:
-            lines.append("    m0, ok := fromStruct(r0)")
+        if _base_type(fn.results[0]) in struct_types:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
             lines.append("    if !ok {")
             lines.append(
                 '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
             )
             lines.append("    }")
-            lines.append("    return m0, nil")
+            lines.append("    return v0, nil")
         else:
             lines.append("    return r0, nil")
 
@@ -266,6 +276,38 @@ def _write_wrapper(
 
 def _conv_expr(go_type: str, v: str) -> str:
     raise AssertionError(f"unexpected: {_conv_expr.__name__} called for {go_type}/{v}")
+
+
+def _base_type(go_type: str) -> str:
+    t = go_type.strip()
+    while True:
+        if t.startswith("*"):
+            t = t[1:].strip()
+            continue
+        if t.startswith("[]"):
+            t = t[2:].strip()
+            continue
+        if t.startswith("map[string]"):
+            t = t[len("map[string]") :].strip()
+            continue
+        return t
+
+
+def _qualify_type(go_type: str, *, pkg_alias: str, struct_types: set[str]) -> str:
+    t = go_type.strip()
+    if t.startswith("*"):
+        return "*" + _qualify_type(t[1:], pkg_alias=pkg_alias, struct_types=struct_types)
+    if t.startswith("[]"):
+        return "[]" + _qualify_type(t[2:], pkg_alias=pkg_alias, struct_types=struct_types)
+    if t.startswith("map[string]"):
+        return "map[string]" + _qualify_type(
+            t[len("map[string]") :],
+            pkg_alias=pkg_alias,
+            struct_types=struct_types,
+        )
+    if t in struct_types:
+        return f"{pkg_alias}.{t}"
+    return t
 
 
 def _write_arg_convert(
@@ -283,9 +325,9 @@ def _write_arg_convert(
             '    return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}'
         )
 
-    if go_type in struct_types:
-        typ = f"{pkg_alias}.{go_type}"
-        lines.append(f"    {var_name}, ok := toStruct[{typ}]({value_expr})")
+    if _base_type(go_type) in struct_types:
+        typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
+        lines.append(f"    {var_name}, ok := toGoValue[{typ}]({value_expr})")
         lines.append("    if !ok {")
         unsupported()
         lines.append("    }")
@@ -501,7 +543,7 @@ def _write_arg_convert(
     return lines
 
 
-def _write_helpers(*, needs_reflect: bool) -> list[str]:
+def _write_helpers(*, needs_reflect: bool, allowed_struct_type_keys: list[str]) -> list[str]:
     out = [
         "func toUnsupported(v any) (any, bool) {",
         "    _ = v",
@@ -865,14 +907,62 @@ def _write_helpers(*, needs_reflect: bool) -> list[str]:
     if not needs_reflect:
         return out
 
+    # Embed a whitelist of named struct types we allow to cross the boundary as record structs.
+    # This prevents accidentally exporting arbitrary third-party structs (e.g. time.Time) as maps.
+    # Note: these types are referenced only by reflection, so this list is sufficient.
+    #
+    # We currently allow all named structs discovered in the scanned packages.
+    # (It is still restricted to structs that actually appear in supported signatures.)
     out.extend(
         [
+            "",
+            "var allowedStructTypes = map[string]bool{",
+        ]
+    )
+    for k in allowed_struct_type_keys:
+        out.append(f'    "{k}": true,')
+    out.extend(
+        [
+            "}",
+            "",
+            "func isAllowedStructType(t reflect.Type) bool {",
+            "    if t.Kind() == reflect.Ptr {",
+            "        t = t.Elem()",
+            "    }",
+            "    if t.Kind() != reflect.Struct {",
+            "        return false",
+            "    }",
+            "    if t.PkgPath() == \"\" || t.Name() == \"\" {",
+            "        return false",
+            "    }",
+            "    k := t.PkgPath() + \".\" + t.Name()",
+            "    return allowedStructTypes[k]",
+            "}",
+        ]
+    )
+
+    out.extend(
+        [
+            "",
+            "func toGoValue[T any](v any) (T, bool) {",
+            "    var out T",
+            "    rt := reflect.TypeOf((*T)(nil)).Elem()",
+            "    rv, ok := convertToType(v, rt)",
+            "    if !ok {",
+            "        return out, false",
+            "    }",
+            "    vv, ok := rv.Interface().(T)",
+            "    if !ok {",
+            "        return out, false",
+            "    }",
+            "    return vv, true",
+            "}",
             "",
             "func toStruct[T any](v any) (T, bool) {",
             "    var out T",
             "    rv := reflect.ValueOf(&out).Elem()",
             "    if rv.Kind() != reflect.Struct {",
-            "        return out, false",
+                "        return out, false",
             "    }",
             "    m, ok := toAnyMap(v)",
             "    if !ok {",
@@ -900,23 +990,23 @@ def _write_helpers(*, needs_reflect: bool) -> list[str]:
             "func fromStruct(v any) (map[string]any, bool) {",
             "    rv := reflect.ValueOf(v)",
             "    if rv.Kind() == reflect.Ptr {",
-            "        rv = rv.Elem()",
+                "        rv = rv.Elem()",
             "    }",
             "    if rv.Kind() != reflect.Struct {",
-            "        return nil, false",
+                "        return nil, false",
             "    }",
             "    rt := rv.Type()",
             "    out := map[string]any{}",
             "    for i := 0; i < rt.NumField(); i++ {",
-            "        sf := rt.Field(i)",
-            "        if sf.PkgPath != \"\" {",
-            "            continue",
-            "        }",
-            "        av, ok := exportAny(rv.Field(i))",
-            "        if !ok {",
-            "            return nil, false",
-            "        }",
-            "        out[sf.Name] = av",
+                "        sf := rt.Field(i)",
+                "        if sf.PkgPath != \"\" {",
+                    "            continue",
+                "        }",
+                "        av, ok := exportAny(rv.Field(i))",
+                "        if !ok {",
+                    "            return nil, false",
+                "        }",
+                "        out[sf.Name] = av",
             "    }",
             "    return out, true",
             "}",
@@ -945,6 +1035,9 @@ def _write_helpers(*, needs_reflect: bool) -> list[str]:
             "            return reflect.Value{}, false",
             "        }",
             "        out := reflect.New(t).Elem()",
+            "        if out.OverflowInt(n) {",
+            "            return reflect.Value{}, false",
+            "        }",
             "        out.SetInt(n)",
             "        return out, true",
             "    case reflect.Float32, reflect.Float64:",
@@ -953,18 +1046,32 @@ def _write_helpers(*, needs_reflect: bool) -> list[str]:
             "            return reflect.Value{}, false",
             "        }",
             "        out := reflect.New(t).Elem()",
+            "        if out.OverflowFloat(f) {",
+            "            return reflect.Value{}, false",
+            "        }",
             "        out.SetFloat(f)",
+            "        return out, true",
+            "    case reflect.Ptr:",
+            "        if v == nil {",
+            "            return reflect.Zero(t), true",
+            "        }",
+            "        cv, ok := convertToType(v, t.Elem())",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.New(t.Elem())",
+            "        out.Elem().Set(cv)",
             "        return out, true",
             "    case reflect.Slice:",
             "        // Special-case []byte",
             "        if t.Elem().Kind() == reflect.Uint8 {",
-            "            b, ok := toBytes(v)",
-            "            if !ok {",
-            "                return reflect.Value{}, false",
-            "            }",
-            "            out := reflect.New(t).Elem()",
-            "            out.SetBytes(b)",
-            "            return out, true",
+                "            b, ok := toBytes(v)",
+                "            if !ok {",
+                    "                return reflect.Value{}, false",
+                "            }",
+                "            out := reflect.New(t).Elem()",
+                "            out.SetBytes(b)",
+                "            return out, true",
             "        }",
             "        xs, ok := toAnySlice(v)",
             "        if !ok {",
@@ -997,8 +1104,31 @@ def _write_helpers(*, needs_reflect: bool) -> list[str]:
             "        }",
             "        return out, true",
             "    case reflect.Struct:",
-            "        // Phase A: no nested structs.",
-            "        return reflect.Value{}, false",
+            "        if !isAllowedStructType(t) {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        m, ok := toAnyMap(v)",
+            "        if !ok {",
+            "            return reflect.Value{}, false",
+            "        }",
+            "        out := reflect.New(t).Elem()",
+            "        rt := out.Type()",
+            "        for k, vv := range m {",
+            "            sf, ok := rt.FieldByName(k)",
+            "            if !ok || sf.PkgPath != \"\" {",
+            "                return reflect.Value{}, false",
+            "            }",
+            "            fv := out.FieldByIndex(sf.Index)",
+            "            if !fv.CanSet() {",
+            "                return reflect.Value{}, false",
+            "            }",
+            "            cv, ok := convertToType(vv, fv.Type())",
+            "            if !ok {",
+            "                return reflect.Value{}, false",
+            "            }",
+            "            fv.Set(cv)",
+            "        }",
+            "        return out, true",
             "    default:",
             "        return reflect.Value{}, false",
             "    }",
@@ -1042,8 +1172,23 @@ def _write_helpers(*, needs_reflect: bool) -> list[str]:
             "        }",
             "        return out, true",
             "    case reflect.Struct:",
-            "        // Phase A: no nested structs.",
-            "        return nil, false",
+            "        if !isAllowedStructType(v.Type()) {",
+            "            return nil, false",
+            "        }",
+            "        out := map[string]any{}",
+            "        rt := v.Type()",
+            "        for i := 0; i < rt.NumField(); i++ {",
+            "            sf := rt.Field(i)",
+            "            if sf.PkgPath != \"\" {",
+            "                continue",
+            "            }",
+            "            av, ok := exportAny(v.Field(i))",
+            "            if !ok {",
+            "                return nil, false",
+            "            }",
+            "            out[sf.Name] = av",
+            "        }",
+            "        return out, true",
             "    default:",
             "        return nil, false",
             "    }",

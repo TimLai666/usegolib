@@ -64,19 +64,16 @@ def _is_supported_type(t: str, *, struct_types: set[str] | None = None) -> bool:
         "float32",
         "float64",
     }
-    slices = {
-        "[]bool",
-        "[]string",
-        "[]int",
-        "[]int64",
-        "[]float64",
-        "[][]byte",
-    }
-    if t in scalars or t in slices:
+    if t in scalars:
         return True
+    if t.startswith("*"):
+        return _is_supported_type(t[1:], struct_types=struct_types)
+    if t.startswith("[]"):
+        # []byte is handled above as a special scalar.
+        return _is_supported_type(t[2:], struct_types=struct_types)
     if t.startswith("map[string]"):
         vt = t[len("map[string]") :]
-        return vt in scalars or vt in slices
+        return _is_supported_type(vt, struct_types=struct_types)
     if struct_types and t in struct_types:
         return True
     return False
