@@ -256,7 +256,15 @@ def build_artifact(
                 "schema": {
                     "structs": {
                         pkg: {
-                            name: [{"name": f.name, "type": f.type} for f in fields]
+                            name: [
+                                {
+                                    "name": f.name,
+                                    "type": f.type,
+                                    "key": f.key,
+                                    "aliases": f.aliases,
+                                }
+                                for f in fields
+                            ]
                             for name, fields in scan.structs_by_pkg.get(pkg, {}).items()
                         }
                         for pkg in sorted(scan.structs_by_pkg.keys())

@@ -26,14 +26,14 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 'import "errors"',
                 "",
                 "type Person struct {",
-                "    Name string",
-                "    Age int64",
+                "    Name string `json:\"name\"`",
+                "    Age int64 `msgpack:\"age\"`",
                 "    Data []byte",
                 "    Meta map[string]int64",
                 "}",
                 "",
                 "type Company struct {",
-                "    CEO Person",
+                "    CEO Person `json:\"ceo\"`",
                 "    Employees []Person",
                 "    VP *Person",
                 "    Teams map[string]Person",
@@ -154,47 +154,47 @@ def test_build_and_call(tmp_path: Path):
     h = usegolib.import_("example.com/testmod", artifact_dir=out_dir)
     assert h.AddInt(1, 2) == 3
     assert h.AddGrouped(10, 20) == 30
-    assert h.MakePerson("bob", 20) == {"Name": "bob", "Age": 20, "Data": b"bob", "Meta": {"age": 20}}
+    assert h.MakePerson("bob", 20) == {"name": "bob", "age": 20, "Data": b"bob", "Meta": {"age": 20}}
     assert h.MakeCompany() == {
-        "CEO": {"Name": "ceo", "Age": 40, "Data": b"ceo", "Meta": {"age": 40}},
+        "ceo": {"name": "ceo", "age": 40, "Data": b"ceo", "Meta": {"age": 40}},
         "Employees": [
-            {"Name": "e1", "Age": 20, "Data": b"e1", "Meta": {"age": 20}},
-            {"Name": "e2", "Age": 21, "Data": b"e2", "Meta": {"age": 21}},
+            {"name": "e1", "age": 20, "Data": b"e1", "Meta": {"age": 20}},
+            {"name": "e2", "age": 21, "Data": b"e2", "Meta": {"age": 21}},
         ],
-        "VP": {"Name": "vp", "Age": 35, "Data": b"vp", "Meta": {"age": 35}},
-        "Teams": {"a": {"Name": "e1", "Age": 20, "Data": b"e1", "Meta": {"age": 20}}},
+        "VP": {"name": "vp", "age": 35, "Data": b"vp", "Meta": {"age": 35}},
+        "Teams": {"a": {"name": "e1", "age": 20, "Data": b"e1", "Meta": {"age": 20}}},
     }
     assert h.EchoCompany(
         {
-            "CEO": {"Name": "x", "Age": 1, "Data": b"x", "Meta": {"age": 1}},
-            "Employees": [{"Name": "y", "Age": 2, "Data": b"y", "Meta": {}}],
+            "ceo": {"name": "x", "age": 1, "Data": b"x", "Meta": {"age": 1}},
+            "Employees": [{"name": "y", "age": 2, "Data": b"y", "Meta": {}}],
             "VP": None,
             "Teams": {},
         }
     ) == {
-        "CEO": {"Name": "x", "Age": 1, "Data": b"x", "Meta": {"age": 1}},
-        "Employees": [{"Name": "y", "Age": 2, "Data": b"y", "Meta": {}}],
+        "ceo": {"name": "x", "age": 1, "Data": b"x", "Meta": {"age": 1}},
+        "Employees": [{"name": "y", "age": 2, "Data": b"y", "Meta": {}}],
         "VP": None,
         "Teams": {},
     }
     assert h.CountEmployees(
         [
             {
-                "CEO": {"Name": "x", "Age": 1, "Data": b"x", "Meta": {}},
-                "Employees": [{"Name": "y", "Age": 2, "Data": b"y", "Meta": {}}],
+                "ceo": {"name": "x", "age": 1, "Data": b"x", "Meta": {}},
+                "Employees": [{"name": "y", "age": 2, "Data": b"y", "Meta": {}}],
                 "VP": None,
                 "Teams": {},
             }
         ]
     ) == 1
-    assert h.EchoPerson({"Name": "alice", "Age": 17, "Data": b"x", "Meta": {"age": 17}}) == {
-        "Name": "alice",
-        "Age": 17,
+    assert h.EchoPerson({"name": "alice", "age": 17, "Data": b"x", "Meta": {"age": 17}}) == {
+        "name": "alice",
+        "age": 17,
         "Data": b"x",
         "Meta": {"age": 17},
     }
-    assert h.IsAdult({"Name": "z", "Age": 18, "Data": b"", "Meta": {}}) is True
-    assert h.IsAdult({"Name": "z"}) is False
+    assert h.IsAdult({"name": "z", "age": 18, "Data": b"", "Meta": {}}) is True
+    assert h.IsAdult({"name": "z"}) is False
     assert h.SumMap({"a": 1, "b": 2}) == 3
     assert h.SumMapSlices({"x": [1, 2], "y": [3]}) == 6
     assert h.ReturnMapBytes() == {"a": b"abc", "b": bytes([0, 1, 2])}

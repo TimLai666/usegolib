@@ -15,6 +15,8 @@ class ExportedFunc:
 class StructField:
     name: str
     type: str
+    key: str
+    aliases: list[str]
 
 
 @dataclass(frozen=True)

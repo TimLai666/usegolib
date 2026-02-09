@@ -94,8 +94,16 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                             continue
                         fn = f.get("name")
                         ft = f.get("type")
-                        if isinstance(fn, str) and isinstance(ft, str) and fn and ft:
-                            out_fields.append(StructField(name=fn, type=ft))
+                        fk = f.get("key")
+                        fa = f.get("aliases")
+                        if not (isinstance(fn, str) and isinstance(ft, str) and fn and ft):
+                            continue
+                        if not isinstance(fk, str) or not fk:
+                            fk = fn
+                        aliases: list[str] = []
+                        if isinstance(fa, list) and all(isinstance(x, str) for x in fa):
+                            aliases = [x for x in fa if x]
+                        out_fields.append(StructField(name=fn, type=ft, key=fk, aliases=aliases))
                     by_name[name] = out_fields
                 if by_name:
                     structs_by_pkg[pkg] = by_name
@@ -129,6 +137,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -155,6 +165,8 @@ type outObj struct {
 type outStructField struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+	Key string `json:"key"`
+	Aliases []string `json:"aliases"`
 }
 
 type outStruct struct {
@@ -339,11 +351,37 @@ func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string]
 						if t == "" {
 							continue
 						}
+						tag := ""
+						if f.Tag != nil {
+							if s, err := strconv.Unquote(f.Tag.Value); err == nil {
+								tag = s
+							}
+						}
+						msgpackKey := tagName(reflect.StructTag(tag).Get("msgpack"))
+						jsonKey := tagName(reflect.StructTag(tag).Get("json"))
 						for _, nm := range f.Names {
 							if nm == nil || !nm.IsExported() {
 								continue
 							}
-							fields = append(fields, outStructField{Name: nm.Name, Type: t})
+							key := nm.Name
+							if msgpackKey != "" {
+								key = msgpackKey
+							} else if jsonKey != "" {
+								key = jsonKey
+							}
+							aliases := map[string]bool{}
+							aliases[nm.Name] = true
+							if msgpackKey != "" {
+								aliases[msgpackKey] = true
+							}
+							if jsonKey != "" {
+								aliases[jsonKey] = true
+							}
+							alist := make([]string, 0, len(aliases))
+							for a := range aliases {
+								alist = append(alist, a)
+							}
+							fields = append(fields, outStructField{Name: nm.Name, Type: t, Key: key, Aliases: alist})
 						}
 					}
 					if len(fields) > 0 {
@@ -353,6 +391,23 @@ func collectStructTypes(af *ast.File, out map[string]bool, fieldsOut map[string]
 			}
 		}
 	}
+}
+
+func tagName(tag string) string {
+	if tag == "" {
+		return ""
+	}
+	n := tag
+	for i := 0; i < len(n); i++ {
+		if n[i] == ',' {
+			n = n[:i]
+			break
+		}
+	}
+	if n == "-" {
+		return ""
+	}
+	return n
 }
 
 func renderType(e ast.Expr) string {

@@ -18,7 +18,7 @@ from .errors import (
     VersionConflictError,
 )
 from .runtime.cbridge import SharedLibClient
-from .schema import Schema, validate_call_args
+from .schema import Schema, validate_call_args, validate_call_result
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,13 @@ class PackageHandle:
             resp_bytes = self._client.call(req)
             resp = abi.decode_response(resp_bytes)
             if resp.ok:
+                if self._schema is not None:
+                    validate_call_result(
+                        schema=self._schema,
+                        pkg=self.package,
+                        fn=name,
+                        result=resp.result,
+                    )
                 return resp.result
 
             err = resp.error

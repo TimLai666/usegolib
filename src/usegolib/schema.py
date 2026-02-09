@@ -40,31 +40,49 @@ def _parse_type(t: str) -> tuple[str, list[str]]:
 
 @dataclass(frozen=True)
 class Schema:
-    structs_by_pkg: dict[str, dict[str, dict[str, str]]]
+    # pkg -> structName -> key -> (goFieldName, goTypeString)
+    structs_by_pkg: dict[str, dict[str, dict[str, tuple[str, str]]]]
     symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]]
 
     @classmethod
     def from_manifest(cls, manifest_schema: dict[str, Any] | None) -> "Schema | None":
         if not manifest_schema:
             return None
-        structs: dict[str, dict[str, dict[str, str]]] = {}
+        structs: dict[str, dict[str, dict[str, tuple[str, str]]]] = {}
         raw_structs = manifest_schema.get("structs")
         if isinstance(raw_structs, dict):
             for pkg, by_name in raw_structs.items():
                 if not isinstance(pkg, str) or not isinstance(by_name, dict):
                     continue
-                pkg_out: dict[str, dict[str, str]] = {}
+                pkg_out: dict[str, dict[str, tuple[str, str]]] = {}
                 for name, fields in by_name.items():
                     if not isinstance(name, str) or not isinstance(fields, list):
                         continue
-                    field_map: dict[str, str] = {}
+                    field_map: dict[str, tuple[str, str]] = {}
                     for f in fields:
                         if not isinstance(f, dict):
                             continue
                         fn = f.get("name")
                         ft = f.get("type")
-                        if isinstance(fn, str) and isinstance(ft, str) and fn and ft:
-                            field_map[fn] = ft
+                        fk = f.get("key")
+                        fa = f.get("aliases")
+                        if not (isinstance(fn, str) and isinstance(ft, str) and fn and ft):
+                            continue
+                        key = fk if isinstance(fk, str) and fk else fn
+                        aliases: list[str] = []
+                        if isinstance(fa, list) and all(isinstance(x, str) for x in fa):
+                            aliases = [x for x in fa if x]
+
+                        # Always accept exported field name and canonical key.
+                        all_keys = {fn, key, *aliases}
+                        for k in all_keys:
+                            if not k:
+                                continue
+                            existing = field_map.get(k)
+                            if existing is not None and existing[0] != fn:
+                                # Ambiguous alias; drop it rather than picking a wrong field.
+                                continue
+                            field_map[k] = (fn, ft)
                     if field_map:
                         pkg_out[name] = field_map
                 if pkg_out:
@@ -105,6 +123,23 @@ def validate_call_args(*, schema: Schema, pkg: str, fn: str, args: list[Any]) ->
             _validate_value(schema=schema, pkg=pkg, t=t, v=v)
         except UnsupportedTypeError as e:
             raise UnsupportedTypeError(f"schema: arg{i} ({t}): {e}") from None
+
+
+def validate_call_result(*, schema: Schema, pkg: str, fn: str, result: Any) -> None:
+    sig = schema.symbols_by_pkg.get(pkg, {}).get(fn)
+    if sig is None:
+        return
+    _params, results = sig
+    if not results:
+        if result is not None:
+            raise UnsupportedTypeError("schema: expected nil result")
+        return
+    # (T, error) is represented as a single successful result in the ABI.
+    t0 = results[0]
+    try:
+        _validate_value(schema=schema, pkg=pkg, t=t0, v=result)
+    except UnsupportedTypeError as e:
+        raise UnsupportedTypeError(f"schema: result ({t0}): {e}") from None
 
 
 def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
@@ -169,13 +204,18 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
         raise UnsupportedTypeError("expected dict")
     if not isinstance(v, dict):
         raise UnsupportedTypeError("expected dict")
+    seen_fields: set[str] = set()
     for k in v.keys():
         if not isinstance(k, str):
             raise UnsupportedTypeError("expected str keys")
         if k not in fields:
             raise UnsupportedTypeError(f"unknown field {k}")
     for k, vv in v.items():
+        field_name, field_type = fields[k]
+        if field_name in seen_fields:
+            raise UnsupportedTypeError(f"duplicate field {field_name}")
+        seen_fields.add(field_name)
         try:
-            _validate_value(schema=schema, pkg=pkg, t=fields[k], v=vv)
+            _validate_value(schema=schema, pkg=pkg, t=field_type, v=vv)
         except UnsupportedTypeError as e:
-            raise UnsupportedTypeError(f"field {k} ({fields[k]}): {e}") from None
+            raise UnsupportedTypeError(f"field {k} ({field_type}): {e}") from None
