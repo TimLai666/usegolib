@@ -15,6 +15,10 @@ class VersionConflictError(UseGoLibError):
     """Raised when two versions of the same module would be loaded in one process."""
 
 
+class AmbiguousArtifactError(UseGoLibError):
+    """Raised when artifact resolution matches multiple candidates."""
+
+
 class LoadError(UseGoLibError):
     """Raised when a shared library cannot be loaded."""
 

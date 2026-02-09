@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .errors import ArtifactNotFoundError
+from .errors import AmbiguousArtifactError, ArtifactNotFoundError
+from .runtime.platform import host_goarch, host_goos
 
 
 @dataclass(frozen=True)
@@ -55,8 +56,43 @@ def read_manifest(path_or_dir: Path) -> ArtifactManifest:
 
 def load_artifact(path_or_dir: str | Path):
     # Imported from `__init__` to form the public API.
-    from .handle import ModuleHandle  # local import to avoid cycles
+    from .handle import PackageHandle  # local import to avoid cycles
 
     manifest = read_manifest(Path(path_or_dir))
-    return ModuleHandle.from_manifest(manifest)
+    return PackageHandle.from_manifest(manifest, package=manifest.module)
 
+
+def resolve_manifest(
+    artifact_root: Path, *, package: str, version: str | None
+) -> ArtifactManifest:
+    goos = host_goos()
+    goarch = host_goarch()
+
+    candidates: list[ArtifactManifest] = []
+    for p in Path(artifact_root).rglob("manifest.json"):
+        try:
+            m = read_manifest(p.parent)
+        except Exception:
+            continue
+        if m.goos != goos or m.goarch != goarch:
+            continue
+        if package not in m.packages:
+            continue
+        if version is not None and m.version != version:
+            continue
+        candidates.append(m)
+
+    if not candidates:
+        wanted = f"{package}@{version}" if version else package
+        raise ArtifactNotFoundError(
+            f"no matching artifact found for {wanted} on {goos}/{goarch} under {artifact_root}"
+        )
+
+    if version is None and len(candidates) != 1:
+        versions = sorted({c.version for c in candidates})
+        raise AmbiguousArtifactError(
+            f"multiple artifacts found for {package} on {goos}/{goarch}: {versions}"
+        )
+
+    # version specified: take first (should be unique in a well-formed artifact dir)
+    return candidates[0]

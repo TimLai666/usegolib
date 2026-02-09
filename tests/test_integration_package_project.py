@@ -23,26 +23,8 @@ def _write_go_test_module(mod_dir: Path) -> None:
             [
                 "package testmod",
                 "",
-                'import "errors"',
-                "",
                 "func AddInt(a int64, b int64) int64 {",
                 "    return a + b",
-                "}",
-                "",
-                "func EchoBytes(b []byte) []byte {",
-                "    return b",
-                "}",
-                "",
-                "func SumFloats(xs []float64) float64 {",
-                "    var s float64",
-                "    for _, x := range xs {",
-                "        s += x",
-                "    }",
-                "    return s",
-                "}",
-                "",
-                "func Fail(msg string) (string, error) {",
-                "    return \"\", errors.New(msg)",
                 "}",
                 "",
             ]
@@ -51,35 +33,55 @@ def _write_go_test_module(mod_dir: Path) -> None:
     )
 
 
+def _venv_python(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
 @pytest.mark.skipif(
     os.environ.get("USEGOLIB_INTEGRATION") != "1",
     reason="set USEGOLIB_INTEGRATION=1 to run integration tests",
 )
-def test_build_and_call(tmp_path: Path):
-    import usegolib
+def test_package_generates_installable_project(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
 
     mod_dir = tmp_path / "gomod"
     mod_dir.mkdir()
     _write_go_test_module(mod_dir)
 
-    out_dir = tmp_path / "artifact"
+    out_root = tmp_path / "out"
+    pkg_name = "mypkg"
+
     subprocess.check_call(
         [
             sys.executable,
             "-m",
             "usegolib",
-            "build",
+            "package",
             "--module",
             str(mod_dir),
+            "--python-package-name",
+            pkg_name,
             "--out",
-            str(out_dir),
+            str(out_root),
         ]
     )
 
-    h = usegolib.import_("example.com/testmod", artifact_dir=out_dir)
-    assert h.AddInt(1, 2) == 3
-    assert h.EchoBytes(b"abc") == b"abc"
-    assert h.SumFloats([1.25, 2.5]) == pytest.approx(3.75)
+    proj_dir = out_root / pkg_name
+    assert (proj_dir / "pyproject.toml").exists()
 
-    with pytest.raises(usegolib.errors.GoError):
-        h.Fail("boom")
+    venv_dir = tmp_path / "venv"
+    subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
+    vpy = _venv_python(venv_dir)
+
+    # Install usegolib (this repo) and then the generated package.
+    subprocess.check_call([str(vpy), "-m", "pip", "install", "-e", str(repo_root)])
+    subprocess.check_call([str(vpy), "-m", "pip", "install", "-e", str(proj_dir)])
+
+    out = subprocess.check_output(
+        [str(vpy), "-c", f"import {pkg_name}; print({pkg_name}.AddInt(1, 2))"],
+        text=True,
+    ).strip()
+    assert out == "3"
+

@@ -14,6 +14,14 @@ def main() -> None:
     p_build.add_argument("--module", required=True, help="Go module directory path (v0).")
     p_build.add_argument("--out", required=True, help="Output artifact directory.")
 
+    p_pkg = sub.add_parser(
+        "package",
+        help="Generate a Python package project embedding the built artifact (v0).",
+    )
+    p_pkg.add_argument("--module", required=True, help="Go module directory path (v0).")
+    p_pkg.add_argument("--python-package-name", required=True, help="Python package name to generate.")
+    p_pkg.add_argument("--out", required=True, help="Output directory for the generated project.")
+
     args = parser.parse_args()
     if args.cmd == "version":
         print("0.0.0")
@@ -23,4 +31,33 @@ def main() -> None:
         from .builder.build import build_artifact
 
         build_artifact(module=Path(args.module), out_dir=Path(args.out))
+        return
+
+    if args.cmd == "package":
+        from .builder.build import build_artifact
+        from .artifact import read_manifest
+        from .packager.generate import generate_project
+
+        module_dir = Path(args.module)
+        out_dir = Path(args.out)
+
+        # Build artifacts into a temporary root, then embed them into the project.
+        tmp_root = out_dir / f".usegolib_tmp_artifacts_{args.python_package_name}"
+        if tmp_root.exists():
+            raise SystemExit(f"temporary artifact dir already exists: {tmp_root}")
+        try:
+            manifest_path = build_artifact(module=module_dir, out_dir=tmp_root)
+            manifest = read_manifest(manifest_path.parent)
+            generate_project(
+                python_package_name=args.python_package_name,
+                module=manifest.module,
+                artifact_root=tmp_root,
+                out_dir=out_dir,
+            )
+        finally:
+            if tmp_root.exists():
+                # Best-effort cleanup. The generated project contains its own copy.
+                import shutil
+
+                shutil.rmtree(tmp_root, ignore_errors=True)
         return

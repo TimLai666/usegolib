@@ -181,10 +181,25 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _artifact_leaf_dir(
+    *,
+    out_root: Path,
+    module_path: str,
+    version: str,
+    goos: str,
+    goarch: str,
+) -> Path:
+    parts = module_path.split("/")
+    if not parts:
+        raise BuildError(f"invalid module path: {module_path}")
+    parts[-1] = f"{parts[-1]}@{version}"
+    return out_root.joinpath(*parts, f"{goos}-{goarch}")
+
+
 def build_artifact(*, module: Path, out_dir: Path) -> Path:
     module_dir = Path(module).resolve()
-    out_dir = Path(out_dir).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_root = Path(out_dir).resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
 
     module_path = _read_module_path(module_dir)
     packages = _list_packages(module_dir)
@@ -203,8 +218,21 @@ def build_artifact(*, module: Path, out_dir: Path) -> Path:
 
         write_bridge(bridge_dir=bridge_dir, module_path=module_path, functions=exported)
 
+        goos = _run(["go", "env", "GOOS"], cwd=module_dir).strip()
+        goarch = _run(["go", "env", "GOARCH"], cwd=module_dir).strip()
+
+        version = "local"
+        out_leaf = _artifact_leaf_dir(
+            out_root=out_root,
+            module_path=module_path,
+            version=version,
+            goos=goos,
+            goarch=goarch,
+        )
+        out_leaf.mkdir(parents=True, exist_ok=True)
+
         lib_name = f"libusegolib{_go_ext()}"
-        lib_path = out_dir / lib_name
+        lib_path = out_leaf / lib_name
 
         zig = ensure_zig()
         env = dict(os.environ)
@@ -222,9 +250,6 @@ def build_artifact(*, module: Path, out_dir: Path) -> Path:
         )
 
     sha = _sha256_file(lib_path)
-
-    goos = _run(["go", "env", "GOOS"], cwd=module_dir).strip()
-    goarch = _run(["go", "env", "GOARCH"], cwd=module_dir).strip()
     go_version = _run(["go", "version"], cwd=module_dir).strip()
     zig_version = _run([str(zig), "version"], cwd=module_dir).strip()
 
@@ -232,7 +257,7 @@ def build_artifact(*, module: Path, out_dir: Path) -> Path:
         "manifest_version": 1,
         "abi_version": 0,
         "module": module_path,
-        "version": "local",
+        "version": version,
         "goos": goos,
         "goarch": goarch,
         "go_version": go_version,
@@ -249,5 +274,6 @@ def build_artifact(*, module: Path, out_dir: Path) -> Path:
         ],
         "library": {"path": lib_name, "sha256": sha},
     }
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return out_dir / "manifest.json"
+    manifest_path = out_leaf / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest_path

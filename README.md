@@ -35,8 +35,26 @@ python -m usegolib build --module path/to/go/module --out out/artifact
 ```python
 import usegolib
 
-h = usegolib.load_artifact("out/artifact")
+# Import from an artifact *root* (may contain many modules/versions/platforms)
+h = usegolib.import_("example.com/mod", artifact_dir="out/artifact")
 print(h.AddInt(1, 2))
+```
+
+## Quickstart (generate a distributable Python package project)
+
+```bash
+python -m usegolib package --module path/to/go/module --python-package-name mypkg --out out/
+```
+
+Then install the generated project:
+
+```bash
+python -m pip install -e out/mypkg
+```
+
+```python
+import mypkg
+print(mypkg.AddInt(1, 2))
 ```
 
 ## Version Rules (important)
