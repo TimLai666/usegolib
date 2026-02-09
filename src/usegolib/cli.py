@@ -14,6 +14,7 @@ def main() -> None:
     p_build.add_argument("--module", required=True, help="Go module directory path (v0).")
     p_build.add_argument("--out", required=True, help="Output artifact directory.")
     p_build.add_argument("--version", default=None, help="Go module version (remote only; default: @latest).")
+    p_build.add_argument("--force", action="store_true", help="Force rebuild even if artifact exists.")
 
     p_pkg = sub.add_parser(
         "package",
@@ -32,7 +33,12 @@ def main() -> None:
     if args.cmd == "build":
         from .builder.build import build_artifact
 
-        build_artifact(module=args.module, out_dir=Path(args.out), version=args.version)
+        build_artifact(
+            module=args.module,
+            out_dir=Path(args.out),
+            version=args.version,
+            force=bool(args.force),
+        )
         return
 
     if args.cmd == "package":

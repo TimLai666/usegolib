@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import BuildError
+from .lock import leaf_lock
 from .resolve import resolve_module_target
+from .reuse import artifact_ready
 from .zig import ensure_zig
 
 
@@ -198,7 +200,13 @@ def _artifact_leaf_dir(
     return out_root.joinpath(*parts, f"{goos}-{goarch}")
 
 
-def build_artifact(*, module: str | Path, out_dir: Path, version: str | None = None) -> Path:
+def build_artifact(
+    *,
+    module: str | Path,
+    out_dir: Path,
+    version: str | None = None,
+    force: bool = False,
+) -> Path:
     resolved = resolve_module_target(target=str(module), version=version)
     module_dir = resolved.module_dir
     out_root = Path(out_dir).resolve()
@@ -240,23 +248,28 @@ def build_artifact(*, module: str | Path, out_dir: Path, version: str | None = N
         )
         out_leaf.mkdir(parents=True, exist_ok=True)
 
-        lib_name = f"libusegolib{_go_ext()}"
-        lib_path = out_leaf / lib_name
+        lock_path = out_leaf / ".usegolib.lock"
+        with leaf_lock(lock_path):
+            if not force and artifact_ready(out_leaf):
+                return out_leaf / "manifest.json"
 
-        zig = ensure_zig()
-        env = dict(os.environ)
-        env["CGO_ENABLED"] = "1"
-        env["CC"] = f"{zig} cc"
+            lib_name = f"libusegolib{_go_ext()}"
+            lib_path = out_leaf / lib_name
 
-        # Ensure module sums exist for reproducible builds.
-        _run(["go", "mod", "tidy"], cwd=bridge_dir, env=env)
+            zig = ensure_zig()
+            env = dict(os.environ)
+            env["CGO_ENABLED"] = "1"
+            env["CC"] = f"{zig} cc"
 
-        # Build the bridge runtime.
-        _run(
-            ["go", "build", "-buildmode=c-shared", "-o", str(lib_path), "."],
-            cwd=bridge_dir,
-            env=env,
-        )
+            # Ensure module sums exist for reproducible builds.
+            _run(["go", "mod", "tidy"], cwd=bridge_dir, env=env)
+
+            # Build the bridge runtime.
+            _run(
+                ["go", "build", "-buildmode=c-shared", "-o", str(lib_path), "."],
+                cwd=bridge_dir,
+                env=env,
+            )
 
     sha = _sha256_file(lib_path)
     go_version = _run(["go", "version"], cwd=module_dir).strip()
