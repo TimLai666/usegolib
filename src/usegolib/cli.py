@@ -13,6 +13,7 @@ def main() -> None:
     p_build = sub.add_parser("build", help="Build a Go module into an artifact directory.")
     p_build.add_argument("--module", required=True, help="Go module directory path (v0).")
     p_build.add_argument("--out", required=True, help="Output artifact directory.")
+    p_build.add_argument("--version", default=None, help="Go module version (remote only; default: @latest).")
 
     p_pkg = sub.add_parser(
         "package",
@@ -21,6 +22,7 @@ def main() -> None:
     p_pkg.add_argument("--module", required=True, help="Go module directory path (v0).")
     p_pkg.add_argument("--python-package-name", required=True, help="Python package name to generate.")
     p_pkg.add_argument("--out", required=True, help="Output directory for the generated project.")
+    p_pkg.add_argument("--version", default=None, help="Go module version (remote only; default: @latest).")
 
     args = parser.parse_args()
     if args.cmd == "version":
@@ -30,7 +32,7 @@ def main() -> None:
     if args.cmd == "build":
         from .builder.build import build_artifact
 
-        build_artifact(module=Path(args.module), out_dir=Path(args.out))
+        build_artifact(module=args.module, out_dir=Path(args.out), version=args.version)
         return
 
     if args.cmd == "package":
@@ -38,7 +40,7 @@ def main() -> None:
         from .artifact import read_manifest
         from .packager.generate import generate_project
 
-        module_dir = Path(args.module)
+        module_dir = args.module
         out_dir = Path(args.out)
 
         # Build artifacts into a temporary root, then embed them into the project.
@@ -46,7 +48,7 @@ def main() -> None:
         if tmp_root.exists():
             raise SystemExit(f"temporary artifact dir already exists: {tmp_root}")
         try:
-            manifest_path = build_artifact(module=module_dir, out_dir=tmp_root)
+            manifest_path = build_artifact(module=module_dir, out_dir=tmp_root, version=args.version)
             manifest = read_manifest(manifest_path.parent)
             generate_project(
                 python_package_name=args.python_package_name,

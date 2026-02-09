@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import BuildError
+from .resolve import resolve_module_target
 from .zig import ensure_zig
 
 
@@ -146,21 +146,23 @@ def _bridge_go_mod(
     bridge_dir: Path,
     module_path: str,
     module_dir: Path,
+    module_version: str,
+    local_replace: bool,
 ) -> None:
+    lines: list[str] = [
+        "module usegolib.bridge",
+        "",
+        "go 1.22",
+        "",
+        "require github.com/vmihailenco/msgpack/v5 v5.4.1",
+        f"require {module_path} {module_version}",
+        "",
+    ]
+    if local_replace:
+        lines.append(f"replace {module_path} => {module_dir.as_posix()}")
+        lines.append("")
     (bridge_dir / "go.mod").write_text(
-        "\n".join(
-            [
-                "module usegolib.bridge",
-                "",
-                "go 1.22",
-                "",
-                "require github.com/vmihailenco/msgpack/v5 v5.4.1",
-                f"require {module_path} v0.0.0",
-                "",
-                f"replace {module_path} => {module_dir.as_posix()}",
-                "",
-            ]
-        ),
+        "\n".join(lines),
         encoding="utf-8",
     )
 
@@ -196,12 +198,13 @@ def _artifact_leaf_dir(
     return out_root.joinpath(*parts, f"{goos}-{goarch}")
 
 
-def build_artifact(*, module: Path, out_dir: Path) -> Path:
-    module_dir = Path(module).resolve()
+def build_artifact(*, module: str | Path, out_dir: Path, version: str | None = None) -> Path:
+    resolved = resolve_module_target(target=str(module), version=version)
+    module_dir = resolved.module_dir
     out_root = Path(out_dir).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
 
-    module_path = _read_module_path(module_dir)
+    module_path = resolved.module_path
     packages = _list_packages(module_dir)
 
     exported: list[ExportedFunc] = []
@@ -212,7 +215,13 @@ def build_artifact(*, module: Path, out_dir: Path) -> Path:
 
     with tempfile.TemporaryDirectory(prefix="usegolib-bridge-") as td:
         bridge_dir = Path(td)
-        _bridge_go_mod(bridge_dir=bridge_dir, module_path=module_path, module_dir=module_dir)
+        _bridge_go_mod(
+            bridge_dir=bridge_dir,
+            module_path=module_path,
+            module_dir=module_dir,
+            module_version=resolved.version if resolved.version != "local" else "v0.0.0",
+            local_replace=(resolved.version == "local"),
+        )
 
         from .gobridge import write_bridge
 
@@ -221,11 +230,11 @@ def build_artifact(*, module: Path, out_dir: Path) -> Path:
         goos = _run(["go", "env", "GOOS"], cwd=module_dir).strip()
         goarch = _run(["go", "env", "GOARCH"], cwd=module_dir).strip()
 
-        version = "local"
+        artifact_version = resolved.version
         out_leaf = _artifact_leaf_dir(
             out_root=out_root,
             module_path=module_path,
-            version=version,
+            version=artifact_version,
             goos=goos,
             goarch=goarch,
         )
@@ -257,7 +266,7 @@ def build_artifact(*, module: Path, out_dir: Path) -> Path:
         "manifest_version": 1,
         "abi_version": 0,
         "module": module_path,
-        "version": version,
+        "version": artifact_version,
         "goos": goos,
         "goarch": goarch,
         "go_version": go_version,
