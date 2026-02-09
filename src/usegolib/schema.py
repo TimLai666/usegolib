@@ -154,6 +154,13 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
         if not isinstance(v, str):
             raise UnsupportedTypeError("expected RFC3339 string")
         return
+    if t == "time.Duration":
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise UnsupportedTypeError("expected int (nanoseconds)")
+        lo, hi = _INT_RANGES["int64"]
+        if v < lo or v > hi:
+            raise UnsupportedTypeError("int out of range")
+        return
 
     if t.startswith("*"):
         if v is None:

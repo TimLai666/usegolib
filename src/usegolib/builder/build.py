@@ -68,6 +68,8 @@ def _is_supported_type(t: str, *, struct_types: set[str] | None = None) -> bool:
         return True
     if t == "time.Time":
         return True
+    if t == "time.Duration":
+        return True
     if t.startswith("*"):
         return _is_supported_type(t[1:], struct_types=struct_types)
     if t.startswith("[]"):
@@ -190,11 +192,15 @@ def build_artifact(
         for fn in exported:
             if "time.Time" in fn.params or "time.Time" in fn.results:
                 adapter_types.add("time.Time")
+            if "time.Duration" in fn.params or "time.Duration" in fn.results:
+                adapter_types.add("time.Duration")
         for pkg, by_name in scan.structs_by_pkg.items():
             for _name, fields in by_name.items():
                 for f in fields:
-                    if f.type == "time.Time":
+                    if "time.Time" in f.type:
                         adapter_types.add("time.Time")
+                    if "time.Duration" in f.type:
+                        adapter_types.add("time.Duration")
 
         write_bridge(
             bridge_dir=bridge_dir,

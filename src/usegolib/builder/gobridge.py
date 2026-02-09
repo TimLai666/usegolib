@@ -188,7 +188,7 @@ def write_bridge(
     ]
     if needs_reflect:
         import_block.append('    "reflect"')
-    if "time.Time" in adapter_types:
+    if needs_reflect:
         import_block.append('    "time"')
     for pkg, alias in imports.items():
         import_block.append(f'    {alias} "{pkg}"')
@@ -252,7 +252,10 @@ def _write_wrapper(
         lines.append("    return nil, nil")
     elif len(fn.results) == 1:
         lines.append(f"    r0 := {call}")
-        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) == "time.Time":
+        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
+            "time.Time",
+            "time.Duration",
+        }:
             lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
             lines.append("    if !ok {")
             lines.append(
@@ -268,7 +271,10 @@ def _write_wrapper(
         lines.append("    if err != nil {")
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
-        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) == "time.Time":
+        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
+            "time.Time",
+            "time.Duration",
+        }:
             lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
             lines.append("    if !ok {")
             lines.append(
@@ -343,6 +349,14 @@ def _write_arg_convert(
         return lines
 
     if _base_type(go_type) == "time.Time":
+        typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
+        lines.append(f"    {var_name}, ok := toGoValue[{typ}]({value_expr})")
+        lines.append("    if !ok {")
+        unsupported()
+        lines.append("    }")
+        return lines
+
+    if _base_type(go_type) == "time.Duration":
         typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
         lines.append(f"    {var_name}, ok := toGoValue[{typ}]({value_expr})")
         lines.append("    if !ok {")

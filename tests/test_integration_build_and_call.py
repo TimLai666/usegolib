@@ -41,6 +41,7 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    VP *Person",
                 "    Teams map[string]Person",
                 "    Founded time.Time `json:\"founded\"`",
+                "    Timeout time.Duration `json:\"timeout\"`",
                 "}",
                 "",
                 "func MakePerson(name string, age int64) Person {",
@@ -53,7 +54,7 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    e1 := Person{Name: \"e1\", Age: 20, Data: []byte(\"e1\"), Meta: map[string]int64{\"age\": 20}}",
                 "    e2 := Person{Name: \"e2\", Age: 21, Data: []byte(\"e2\"), Meta: map[string]int64{\"age\": 21}}",
                 "    founded := time.Date(2020, 1, 2, 3, 4, 5, 6, time.UTC)",
-                "    return Company{CEO: ceo, VP: &vp, Employees: []Person{e1, e2}, Teams: map[string]Person{\"a\": e1}, Founded: founded}",
+                "    return Company{CEO: ceo, VP: &vp, Employees: []Person{e1, e2}, Teams: map[string]Person{\"a\": e1}, Founded: founded, Timeout: 5*time.Second}",
                 "}",
                 "",
                 "func EchoCompany(c Company) Company {",
@@ -66,6 +67,10 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "",
                 "func AddOneDay(t time.Time) time.Time {",
                 "    return t.Add(24 * time.Hour)",
+                "}",
+                "",
+                "func AddDuration(d time.Duration, ns int64) time.Duration {",
+                "    return d + time.Duration(ns)",
                 "}",
                 "",
                 "func CountEmployees(cs []Company) int64 {",
@@ -177,9 +182,11 @@ def test_build_and_call(tmp_path: Path):
         "VP": {"name": "vp", "age": 35, "Data": b"vp", "Meta": {"age": 35}},
         "Teams": {"a": {"name": "e1", "age": 20, "Data": b"e1", "Meta": {"age": 20}}},
         "founded": "2020-01-02T03:04:05.000000006Z",
+        "timeout": 5_000_000_000,
     }
     assert h.After("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z") is True
     assert h.AddOneDay("2020-01-01T00:00:00Z") == "2020-01-02T00:00:00Z"
+    assert h.AddDuration(1_000_000_000, 2_000_000_000) == 3_000_000_000
     assert h.EchoCompany(
         {
             "ceo": {"name": "x", "age": 1, "Data": b"x", "Meta": {"age": 1}},
@@ -187,6 +194,7 @@ def test_build_and_call(tmp_path: Path):
             "VP": None,
             "Teams": {},
             "founded": "2020-01-02T03:04:05.000000006Z",
+            "timeout": 123,
         }
     ) == {
         "ceo": {"name": "x", "age": 1, "Data": b"x", "Meta": {"age": 1}},
@@ -194,6 +202,7 @@ def test_build_and_call(tmp_path: Path):
         "VP": None,
         "Teams": {},
         "founded": "2020-01-02T03:04:05.000000006Z",
+        "timeout": 123,
     }
     assert h.CountEmployees(
         [
