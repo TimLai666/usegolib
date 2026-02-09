@@ -1,4 +1,4 @@
-# README.md（第一版工程級草稿）
+# spec0.md（第一版工程級草稿）
 
 ````markdown
 # usegolib
