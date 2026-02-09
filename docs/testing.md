@@ -45,6 +45,9 @@ Advanced overrides:
 - `USEGOLIB_WSL_GO_VERSION`: pin Go version (e.g. `1.24.1`; the script will prepend `go`)
 - `USEGOLIB_WSL_GO_ROOT`: set the cache root for the downloaded toolchain
 
+Pinned default:
+- If `tools/go-version.txt` exists, the WSL runner uses it as the default Go version for integration runs.
+
 By default the script targets the `Ubuntu` WSL distro. To run on a different distro:
 
 ```powershell

@@ -49,9 +49,17 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Read Go Version
+        id: go_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="$(tr -d '\r\n' < tools/go-version.txt)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-go@v5
         with:
-          go-version: "stable"
+          go-version: ${{ steps.go_version.outputs.version }}
 
       - name: Cache Go
         uses: actions/cache@v4

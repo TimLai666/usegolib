@@ -73,6 +73,9 @@ $Python -V
 # Bootstrap Go toolchain without sudo (needed for integration tests).
 if ! command -v go >/dev/null 2>&1; then
   GO_VERSION="`${USEGOLIB_WSL_GO_VERSION:-}"
+  if [ -z "`$GO_VERSION" ] && [ -f "$repoWsl/tools/go-version.txt" ]; then
+    GO_VERSION="`$(tr -d '\\r\\n' < "$repoWsl/tools/go-version.txt")"
+  fi
   if [ -z "`$GO_VERSION" ]; then
     GO_VERSION="`$(curl -LsSf https://go.dev/VERSION?m=text | head -n1)"
   else
