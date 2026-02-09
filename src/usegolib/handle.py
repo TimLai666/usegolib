@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import abi
@@ -72,10 +72,17 @@ class PackageHandle:
     def __getattr__(self, name: str) -> Callable[..., Any]:
         # Treat any missing attribute as a Go function call.
         def _call(*args: Any) -> Any:
+            args_list = list(args)
             if self._schema is not None:
-                validate_call_args(schema=self._schema, pkg=self.package, fn=name, args=list(args))
+                # Allow passing generated dataclasses; encode them to record-struct dicts first.
+                from .typed import encode_value
+
+                args_list = [
+                    encode_value(schema=self._schema, pkg=self.package, v=a) for a in args_list
+                ]
+                validate_call_args(schema=self._schema, pkg=self.package, fn=name, args=args_list)
             try:
-                req = abi.encode_call_request(pkg=self.package, fn=name, args=list(args))
+                req = abi.encode_call_request(pkg=self.package, fn=name, args=args_list)
             except Exception as e:  # noqa: BLE001 - encode boundary
                 raise ABIEncodeError(str(e)) from e
 
@@ -105,5 +112,52 @@ class PackageHandle:
                 raise UnsupportedSignatureError(err.message)
 
             raise UseGoLibError(f"{err.type}: {err.message}")
+
+        return _call
+
+    def typed(self) -> "TypedPackageHandle":
+        return TypedPackageHandle(self)
+
+
+@dataclass(frozen=True)
+class TypedPackageHandle:
+    """Typed wrapper around PackageHandle.
+
+    It decodes record-struct results into generated dataclasses based on the
+    manifest schema (when available).
+    """
+
+    _base: PackageHandle
+    _types: Any = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self._base._schema is None:  # noqa: SLF001 - internal linkage
+            raise UseGoLibError("typed handle requires manifest schema")
+        from .typed import make_package_types
+
+        schema = self._base._schema  # noqa: SLF001 - internal linkage
+        assert schema is not None
+        object.__setattr__(self, "_types", make_package_types(schema=schema, pkg=self._base.package))
+
+    @property
+    def types(self):
+        return self._types
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        fn = getattr(self._base, name)
+        schema = self._base._schema  # noqa: SLF001 - internal linkage
+        assert schema is not None
+
+        def _call(*args: Any) -> Any:
+            result = fn(*args)
+            sig = schema.symbols_by_pkg.get(self._base.package, {}).get(name)
+            if sig is None:
+                return result
+            _params, results = sig
+            if not results:
+                return result
+            from .typed import decode_value
+
+            return decode_value(types=self._types, go_type=results[0], v=result)
 
         return _call

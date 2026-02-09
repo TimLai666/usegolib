@@ -42,8 +42,17 @@ def _parse_type(t: str) -> tuple[str, list[str]]:
 class StructSchema:
     # key/alias -> goFieldName
     key_to_name: dict[str, str]
-    # goFieldName -> (goTypeString, required)
-    fields_by_name: dict[str, tuple[str, bool]]
+
+    # goFieldName -> field metadata
+    fields_by_name: dict[str, "FieldSchema"]
+
+
+@dataclass(frozen=True)
+class FieldSchema:
+    type: str
+    required: bool
+    key: str
+    omitempty: bool
 
 
 @dataclass(frozen=True)
@@ -93,7 +102,9 @@ class Schema:
                             required = not ft.strip().startswith("*")
                         if omitempty:
                             required = False
-                        fields_by_name[fn] = (ft, required)
+                        fields_by_name[fn] = FieldSchema(
+                            type=ft, required=required, key=key, omitempty=omitempty
+                        )
 
                         # Always accept exported field name and canonical key.
                         all_keys = {fn, key, *aliases}
@@ -248,7 +259,7 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
             raise UnsupportedTypeError(f"unknown field {k}")
     for k, vv in v.items():
         field_name = st.key_to_name[k]
-        field_type, _required = st.fields_by_name[field_name]
+        field_type = st.fields_by_name[field_name].type
         if field_name in seen_fields:
             raise UnsupportedTypeError(f"duplicate field {field_name}")
         seen_fields.add(field_name)
@@ -258,7 +269,7 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
             raise UnsupportedTypeError(f"field {k} ({field_type}): {e}") from None
 
     missing = sorted(
-        name for name, (_ft, req) in st.fields_by_name.items() if req and name not in seen_fields
+        name for name, fs in st.fields_by_name.items() if fs.required and name not in seen_fields
     )
     if missing:
         raise UnsupportedTypeError(f"missing required field(s): {', '.join(missing)}")

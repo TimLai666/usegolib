@@ -255,3 +255,17 @@ def test_build_and_call(tmp_path: Path):
 
     with pytest.raises(usegolib.errors.GoError):
         h.Fail("boom")
+
+    # Typed wrapper: decode record-struct results into dataclasses and accept dataclasses as inputs.
+    ht = h.typed()
+    p = ht.MakePerson("bob", 20)
+    assert p.Name == "bob"
+    assert p.Age == 20
+    assert p.Nick is None  # omitted by omitempty
+    assert p.Data == b"bob"
+    assert p.Meta == {"age": 20}
+    assert ht.EchoPerson(p) == p
+
+    w = ht.MakeWrapper()
+    assert w.Title == "t"
+    assert w.Person.Name == "w"
