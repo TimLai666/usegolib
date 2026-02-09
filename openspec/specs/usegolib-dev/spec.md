@@ -41,3 +41,16 @@ The repository SHALL keep developer-facing documentation aligned with current `u
 - **WHEN** the repository supports Level 2/3 type bridging and typed adapters in v0.x
 - **THEN** `docs/abi.md` describes the supported type levels and their wire encodings
 
+### Requirement: Repository Policy Docs
+The repository SHALL contain developer-facing policy documentation describing compatibility/versioning rules, security boundaries, and reproducible build guidance.
+
+At minimum, the repository SHALL provide the following documents:
+- `docs/versioning.md`
+- `docs/compatibility.md`
+- `docs/security.md`
+- `docs/reproducible-builds.md`
+
+#### Scenario: Policy docs exist
+- **WHEN** a developer checks the repository documentation
+- **THEN** the policy documents exist at the documented paths
+

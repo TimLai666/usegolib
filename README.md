@@ -69,3 +69,10 @@ print(mypkg.AddInt(1, 2))
 - One Go module = one version per Python process
 - If a module is already loaded, all subpackages must use the same version
 - If `version=None` and multiple artifact versions exist under `artifact_dir`, import fails with `AmbiguousArtifactError`
+
+## Policies
+
+- `docs/versioning.md`: ABI + manifest versioning and compatibility rules
+- `docs/compatibility.md`: supported platforms and toolchain pins
+- `docs/security.md`: security boundaries and current hardening
+- `docs/reproducible-builds.md`: reproducible build guidance
