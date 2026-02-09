@@ -1,8 +1,5 @@
-# usegolib-packager Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-packager-v0. Update Purpose after archive.
-## Requirements
 ### Requirement: Generate Python Package With Embedded Artifacts
 The system SHALL provide a command that generates a Python package project embedding a built artifact (manifest + shared library) for the current OS/arch.
 
