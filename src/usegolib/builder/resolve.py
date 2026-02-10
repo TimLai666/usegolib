@@ -93,7 +93,28 @@ def _go_mod_download_json(arg: str) -> dict:
         )
         if proc.returncode != 0:
             raise BuildError(f"go mod download failed for {arg}\n{proc.stdout}")
+        out = proc.stdout
         try:
-            return json.loads(proc.stdout)
-        except Exception as e:  # noqa: BLE001
-            raise BuildError(f"failed to parse go mod download output for {arg}: {e}") from e
+            return json.loads(out)
+        except Exception:
+            # Go may print non-JSON lines (e.g. toolchain switching messages) to stderr,
+            # which we merge into stdout for portability. Extract the first JSON object.
+            start = out.find("{")
+            if start == -1:
+                raise BuildError(f"failed to parse go mod download output for {arg}")
+            depth = 0
+            end = -1
+            for i, ch in enumerate(out[start:], start=start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            if end == -1:
+                raise BuildError(f"failed to parse go mod download output for {arg}")
+            try:
+                return json.loads(out[start:end])
+            except Exception as e:  # noqa: BLE001
+                raise BuildError(f"failed to parse go mod download output for {arg}: {e}") from e

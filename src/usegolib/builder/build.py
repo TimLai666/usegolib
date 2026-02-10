@@ -465,6 +465,33 @@ def build_artifact(
                 ]
             )
 
+            # Ensure schema includes struct entries for all discovered struct types,
+            # even when a struct has zero exported fields (empty schema). This matters
+            # for methods that return fluent receivers like `*DataList`.
+            struct_schema: dict[str, dict[str, list[dict[str, Any]]]] = {}
+            all_pkgs = set(scan.struct_types_by_pkg.keys()) | set(scan.structs_by_pkg.keys())
+            for pkg in sorted(all_pkgs):
+                names = set(scan.struct_types_by_pkg.get(pkg, set())) | set(
+                    scan.structs_by_pkg.get(pkg, {}).keys()
+                )
+                by_name: dict[str, list[dict[str, Any]]] = {}
+                for name in sorted(names):
+                    fields = scan.structs_by_pkg.get(pkg, {}).get(name, [])
+                    by_name[name] = [
+                        {
+                            "name": f.name,
+                            "type": f.type,
+                            "key": f.key,
+                            "aliases": f.aliases,
+                            "omitempty": f.omitempty,
+                            "embedded": f.embedded,
+                            "required": ((not f.type.strip().startswith("*")) and (not f.omitempty)),
+                        }
+                        for f in fields
+                    ]
+                if by_name:
+                    struct_schema[pkg] = by_name
+
             manifest = {
                 "manifest_version": 1,
                 "abi_version": 0,
@@ -477,27 +504,7 @@ def build_artifact(
                 "packages": packages,
                 "symbols": list(all_symbol_entries),
                 "schema": {
-                    "structs": {
-                        pkg: {
-                            name: [
-                                {
-                                    "name": f.name,
-                                    "type": f.type,
-                                    "key": f.key,
-                                    "aliases": f.aliases,
-                                    "omitempty": f.omitempty,
-                                    "embedded": f.embedded,
-                                    "required": (
-                                        (not f.type.strip().startswith("*"))
-                                        and (not f.omitempty)
-                                    ),
-                                }
-                                for f in fields
-                            ]
-                            for name, fields in scan.structs_by_pkg.get(pkg, {}).items()
-                        }
-                        for pkg in sorted(scan.structs_by_pkg.keys())
-                    },
+                    "structs": struct_schema,
                     "symbols": list(all_symbol_entries),
                     "methods": [
                         {

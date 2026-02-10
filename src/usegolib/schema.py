@@ -83,6 +83,12 @@ class Schema:
                         continue
                     key_to_name: dict[str, str] = {}
                     fields_by_name: dict[str, tuple[str, bool]] = {}
+                    if not fields:
+                        # Allow empty struct schemas to represent "opaque" structs that
+                        # have no exported fields. This prevents runtime validation from
+                        # failing with "unknown type" for fluent APIs that return `*T`.
+                        pkg_out[name] = StructSchema(key_to_name={}, fields_by_name={})
+                        continue
                     for f in fields:
                         if not isinstance(f, dict):
                             continue
@@ -124,9 +130,7 @@ class Schema:
                             key_to_name[k] = fn
 
                     if key_to_name and fields_by_name:
-                        pkg_out[name] = StructSchema(
-                            key_to_name=key_to_name, fields_by_name=fields_by_name
-                        )
+                        pkg_out[name] = StructSchema(key_to_name=key_to_name, fields_by_name=fields_by_name)
                 if pkg_out:
                     structs[pkg] = pkg_out
 
