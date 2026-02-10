@@ -32,14 +32,22 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
         )
         (scan_dir / "main.go").write_text(_scanner_go_source(), encoding="utf-8")
 
-        proc = subprocess.run(
-            ["go", "run", ".", "--module-dir", str(module_dir)],
-            cwd=str(scan_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                ["go", "run", ".", "--module-dir", str(module_dir)],
+                cwd=str(scan_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as e:
+            raise BuildError(
+                "Go toolchain not found (`go` is missing from PATH). "
+                "Install Go and ensure `go` is available on PATH. "
+                "If you do not want auto-build on import, pass `build_if_missing=False` "
+                "(and use prebuilt artifacts/wheels)."
+            ) from e
         if proc.returncode != 0:
             raise BuildError(f"go scan failed\n{proc.stdout}")
 

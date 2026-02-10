@@ -83,14 +83,22 @@ def _go_mod_download_json(arg: str) -> dict:
     # `go mod download` does not require being inside a module, but to be robust
     # across environments, run in a temp directory.
     with tempfile.TemporaryDirectory(prefix="usegolib-moddl-") as td:
-        proc = subprocess.run(
-            ["go", "mod", "download", "-json", arg],
-            cwd=td,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                ["go", "mod", "download", "-json", arg],
+                cwd=td,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as e:
+            raise BuildError(
+                "Go toolchain not found (`go` is missing from PATH). "
+                "Install Go and ensure `go` is available on PATH. "
+                "If you do not want auto-build on import, pass `build_if_missing=False` "
+                "(and use prebuilt artifacts/wheels)."
+            ) from e
         if proc.returncode != 0:
             raise BuildError(f"go mod download failed for {arg}\n{proc.stdout}")
         out = proc.stdout

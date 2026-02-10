@@ -21,15 +21,26 @@ from .zig import ensure_zig
 
 
 def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        prog = cmd[0] if cmd else "<unknown>"
+        if prog == "go":
+            raise BuildError(
+                "Go toolchain not found (`go` is missing from PATH). "
+                "Install Go and ensure `go` is available on PATH. "
+                "If you do not want auto-build on import, pass `build_if_missing=False` "
+                "(and use prebuilt artifacts/wheels)."
+            ) from e
+        raise BuildError(f"command not found: {prog}") from e
     if proc.returncode != 0:
         raise BuildError(f"command failed: {' '.join(cmd)}\n{proc.stdout}")
     return proc.stdout
