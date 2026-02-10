@@ -31,6 +31,17 @@ Setup (one-time):
 - Create the project on PyPI (and optionally TestPyPI) named `usegolib`.
 - In PyPI, configure **Trusted Publishing** for this GitHub repository and allow the workflow `Publish (PyPI)` to publish.
 
+Trusted Publisher fields (PyPI -> Project -> Settings -> Publishing -> Trusted Publishers):
+- Provider: GitHub
+- Repository owner: `TimLai666`
+- Repository name: `usegolib`
+- Workflow: `.github/workflows/publish-pypi.yml`
+- Environment: `pypi` (must match the workflow `environment:` value)
+
+If you see:
+`invalid-publisher: valid token, but no corresponding publisher`
+it usually means the Trusted Publisher configuration does not match the OIDC claims (most commonly the `Environment` field).
+
 Publish:
 1. Run the GitHub Actions workflow "Publish (PyPI)" (manual dispatch).
 2. Choose `pypi` or `testpypi`.
