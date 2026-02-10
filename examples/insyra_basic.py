@@ -16,9 +16,9 @@ def main() -> None:
     #
     # For end-users without Go, ship a prebuilt wheel produced by `usegolib package`.
     insyra = usegolib.import_("github.com/HazelnutParadise/insyra", version="v0.2.14")
-    isr = usegolib.import_("github.com/HazelnutParadise/insyra")
+    isr = usegolib.import_("github.com/HazelnutParadise/insyra/isr")
     # --- DataList (object handle + variadic any) ---
-    dl = insyra.NewDataList(1,2,3)  # Go: NewDataList() -> *DataList
+    dl = insyra.NewDataList()  # Go: NewDataList(values ...any) -> *DataList
     dl.Append(1, 2, 3, 4, 5)  # Go: Append(values ...any)
     print("DataList.Sum() ->", dl.Sum())
     print("DataList.Mean() ->", dl.Mean())

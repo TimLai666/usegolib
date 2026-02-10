@@ -14,11 +14,14 @@ Fix:
 
 ### `AmbiguousArtifactError`
 
-Meaning: `version=None` but multiple versions exist for the same module under the artifact root.
+Meaning: `version=None` but multiple versions exist for the same module under the artifact root (and the module is not already loaded in the current Python process).
 
 Fix:
 - Pass an explicit `version="vX.Y.Z"` (or `"local"` for local module builds), or
 - Remove/relocate the extra version(s) under the artifact root.
+
+Note:
+- If the module is already loaded in the current process, `usegolib.import_(..., version=None)` follows the already-loaded module version (including for subpackage imports), and does not fail with ambiguity.
 
 Tip: you can delete cached artifacts via the CLI:
 
@@ -44,6 +47,24 @@ Auto-build (import triggers download/build) requires a Go toolchain.
 Fix:
 - Install Go, or
 - Avoid auto-build: ship prebuilt artifacts/wheels and import with an explicit `artifact_dir` and `build_if_missing=False`.
+
+### Go module download fails (network / proxy)
+
+Symptoms: build logs mention `proxy.golang.org`, `sum.golang.org`, `i/o timeout`, `wsarecv`, or similar network/proxy errors.
+
+Fix:
+- Retry (transient failures are common), and
+- If `proxy.golang.org` is blocked/unreliable in your environment, try `GOPROXY=direct` and rebuild.
+
+```powershell
+$env:GOPROXY="direct"
+usegolib artifact rebuild --module example.com/mod@vX.Y.Z --clean --redownload
+```
+
+### Go auto-downloads a newer toolchain
+
+If the target module requires a newer Go version, Go may print messages like `go: downloading go1.25.0` during builds.
+This requires network access. If you want to avoid auto toolchain downloads, install a suitable Go version up front or configure Go toolchain selection (for example via `GOTOOLCHAIN`).
 
 ### Zig bootstrap failures
 

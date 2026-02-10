@@ -38,6 +38,7 @@ usegolib build --module github.com/HazelnutParadise/insyra@v0.2.14 --out out/art
 Notes:
 - `--redownload` uses an isolated Go module cache (sets `GOMODCACHE`) under the output root unless `--gomodcache` is provided.
 - Building requires a Go toolchain on `PATH` (`go`). Zig is bootstrapped automatically for cgo.
+- If Go module downloads fail due to proxy/network issues, retry. If `proxy.golang.org` is blocked/unreliable in your environment, try `GOPROXY=direct`.
 
 ## Manage The Artifact Cache
 

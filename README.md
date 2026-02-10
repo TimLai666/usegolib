@@ -102,7 +102,7 @@ dt.Show()
 Notes:
 
 - `usegolib` can only call functions/methods whose parameter and return types are supported by the current type bridge (see `docs/abi.md`).
-- This example requires a Go toolchain to be installed. (At the time of writing, `insyra@v0.2.14` requires `go >= 1.25`.)
+- This example requires a Go toolchain to be installed. (At the time of writing, `insyra@v0.2.14` requires `go >= 1.25` and may cause Go to auto-download a newer toolchain.)
 - If you want to disable auto-build, pass `build_if_missing=False` (and usually an explicit `artifact_dir`).
 - For end-users without Go, ship prebuilt artifacts/wheels (see Packaging).
 
@@ -165,7 +165,7 @@ print(mypkg.AddInt(1, 2))
 
 - One Go module = one version per Python process
 - If a module is already loaded, all subpackages must use the same version
-- If `version=None` and multiple artifact versions exist under `artifact_dir`, import fails with `AmbiguousArtifactError`
+- If `version=None` and multiple artifact versions exist under `artifact_dir`, import fails with `AmbiguousArtifactError` (unless that module is already loaded in the current process, in which case `version=None` follows the already-loaded version)
 
 ## Documentation
 

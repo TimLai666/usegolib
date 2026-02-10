@@ -14,3 +14,5 @@ build/
 
 .venv/
 uv.lock
+
+.tmp_artifacts/
