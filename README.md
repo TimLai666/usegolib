@@ -23,7 +23,23 @@
 ## Requirements
 
 - Python 3.10+
-- Go toolchain (build-time only; not required for runtime if you ship prebuilt artifacts/wheels)
+- Go toolchain:
+  - required for building artifacts (CI / build machine)
+  - required for dev auto-build if `usegolib.import_` needs to download/build a missing artifact
+  - not required for end-user runtime if you ship prebuilt artifacts/wheels
+
+## Do users need Go?
+
+- End-users: **No**, if you ship prebuilt artifacts (or a wheel that embeds artifacts). In that case `usegolib` only loads an existing shared library.
+- Developers: **Yes**, if you rely on auto-build (import triggers `go mod download` + build when an artifact is missing).
+
+To force "no build" behavior in user code, pass an explicit artifact root and set `build_if_missing=False`:
+
+```python
+import usegolib
+
+h = usegolib.import_("example.com/mod", artifact_dir="out/artifact", build_if_missing=False)
+```
 
 ## Quickstart (local build + call)
 
