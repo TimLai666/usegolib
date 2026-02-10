@@ -27,6 +27,7 @@ jobs:
         run: |
           import os
           import re
+          import tomllib
           from pathlib import Path
 
           ref = os.environ.get("GITHUB_REF", "")
@@ -35,16 +36,16 @@ jobs:
             raise SystemExit(f"expected tag ref like refs/tags/vX.Y.Z, got: {ref!r}")
           tag_ver = m.group(1)
 
-          # Minimal parse: read a single `version = "..."` under [project].
-          txt = Path("pyproject.toml").read_text(encoding="utf-8")
-          sec = re.split(r"^\\[project\\]\\s*$", txt, flags=re.M)
-          if len(sec) < 2:
+          # Parse PEP 621 metadata from pyproject.toml.
+          txt = Path("pyproject.toml").read_bytes()
+          data = tomllib.loads(txt.decode("utf-8"))
+          proj = data.get("project")
+          if not isinstance(proj, dict):
             raise SystemExit("missing [project] in pyproject.toml")
-          block = sec[1]
-          m2 = re.search(r"^version\\s*=\\s*\"([^\"]+)\"\\s*$", block, flags=re.M)
-          if not m2:
+          py_ver = proj.get("version")
+          if not isinstance(py_ver, str) or not py_ver.strip():
             raise SystemExit("missing project.version in pyproject.toml")
-          py_ver = m2.group(1)
+          py_ver = py_ver.strip()
 
           if tag_ver != py_ver:
             raise SystemExit(f"tag version v{tag_ver} != pyproject version {py_ver}")
