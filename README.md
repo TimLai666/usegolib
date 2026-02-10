@@ -88,15 +88,15 @@ import usegolib
 insyra = usegolib.import_("github.com/HazelnutParadise/insyra", version="v0.2.14")
 
 # DataList (object handle + variadic any)
-dl = insyra.object("DataList")
+dl = insyra.NewDataList()
 dl.Append(1, 2, 3, 4, 5)
 print(dl.Sum(), dl.Mean())
 
 # DataTable (variadic map[string]any + variadic bool)
-dt = insyra.object("DataTable")
+dt = insyra.NewDataTable()
 dt.AppendRowsByColIndex({"A": 1, "B": 2}, {"A": 3, "B": 4})
 print(dt.NumRows(), dt.NumCols())
-print(dt.Data(True))
+dt.Show()
 ```
 
 Notes:
