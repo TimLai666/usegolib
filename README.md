@@ -80,7 +80,7 @@ h = usegolib.import_("example.com/mod", artifact_dir="out/artifact", build_if_mi
 
 Insyra is a Go data-analysis library: `github.com/HazelnutParadise/insyra`.
 
-Dev-mode auto-build (downloads the module + builds into usegolib's default artifact root):
+Auto-build on import (developer convenience; downloads the module + builds into usegolib's default artifact root):
 
 ```python
 import usegolib
@@ -103,6 +103,7 @@ Notes:
 
 - `usegolib` can only call functions/methods whose parameter and return types are supported by the current type bridge (see `docs/abi.md`).
 - This example requires a Go toolchain to be installed. (At the time of writing, `insyra@v0.2.14` requires `go >= 1.25`.)
+- If you want to disable auto-build, pass `build_if_missing=False` (and usually an explicit `artifact_dir`).
 - For end-users without Go, ship prebuilt artifacts/wheels (see Packaging).
 
 ## Methods (Object Handles)

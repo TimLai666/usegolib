@@ -4,15 +4,17 @@ import usegolib
 
 
 def main() -> None:
-    # Dev-mode auto build:
+    # Auto-build on import (developer convenience):
     # - Downloads the Go module
     # - Builds a shared library artifact into usegolib's default artifact root
     #
-    # Requirements (dev-mode only):
+    # Requirements (for auto-build):
     # - Go toolchain installed (insyra@v0.2.14 requires go >= 1.25)
     # - Network access (module download)
     #
-    # For end-users without Go, use a prebuilt wheel produced by `usegolib package`.
+    # If you want to disable auto-build, pass `build_if_missing=False` (and usually an explicit `artifact_dir`).
+    #
+    # For end-users without Go, ship a prebuilt wheel produced by `usegolib package`.
     insyra = usegolib.import_("github.com/HazelnutParadise/insyra", version="v0.2.14")
 
     # --- DataList (object handle + variadic any) ---
