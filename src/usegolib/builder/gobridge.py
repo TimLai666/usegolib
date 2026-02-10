@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .symbols import ExportedFunc, ExportedMethod
+from .symbols import ExportedFunc, ExportedMethod, GenericInstantiation
 
 
 def write_bridge(
@@ -11,12 +11,14 @@ def write_bridge(
     module_path: str,
     functions: list[ExportedFunc],
     methods: list[ExportedMethod] | None = None,
+    generic_instantiations: list[GenericInstantiation] | None = None,
     struct_types_by_pkg: dict[str, set[str]] | None = None,
     adapter_types: set[str] | None = None,
 ) -> None:
     # Generate a single `main` package for `-buildmode=c-shared`.
     struct_types_by_pkg = struct_types_by_pkg or {}
     methods = methods or []
+    generic_instantiations = generic_instantiations or []
     adapter_types = adapter_types or set()
     imports: dict[str, str] = {}
     for fn in functions:
@@ -27,6 +29,10 @@ def write_bridge(
         if m.pkg not in imports:
             alias = f"p{len(imports)}"
             imports[m.pkg] = alias
+    for gi in generic_instantiations:
+        if gi.pkg not in imports:
+            alias = f"p{len(imports)}"
+            imports[gi.pkg] = alias
 
     func_reg_lines: list[str] = []
     method_reg_lines: list[str] = []
@@ -58,6 +64,23 @@ def write_bridge(
                 wrap_name=wrap_name,
                 alias=alias,
                 fn=fn,
+                struct_types=struct_types,
+            )
+        )
+        wrap_lines.append("")
+
+    for gi in generic_instantiations:
+        alias = imports[gi.pkg]
+        key = f"{gi.pkg}:{gi.symbol}"
+        wrap_name = f"wrapg_{alias}_{gi.symbol}"
+
+        func_reg_lines.append(f'        "{key}": {wrap_name},')
+        struct_types = struct_types_by_pkg.get(gi.pkg, set())
+        wrap_lines.extend(
+            _write_generic_wrapper(
+                wrap_name=wrap_name,
+                alias=alias,
+                gi=gi,
                 struct_types=struct_types,
             )
         )
@@ -504,6 +527,79 @@ def _write_method_wrapper(
         else:
             lines.append("    return r0, nil")
 
+    lines.append("}")
+    return lines
+
+
+def _write_generic_wrapper(
+    *,
+    wrap_name: str,
+    alias: str,
+    gi: GenericInstantiation,
+    struct_types: set[str],
+) -> list[str]:
+    lines: list[str] = []
+    lines.append(f"func {wrap_name}(args []any) (any, *ErrorObj) {{")
+    lines.append(f"    if len(args) != {len(gi.params)} {{")
+    lines.append('        return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}')
+    lines.append("    }")
+
+    arg_names: list[str] = []
+    for i, t in enumerate(gi.params):
+        vn = f"a{i}"
+        arg_names.append(vn)
+        lines.extend(
+            _write_arg_convert(
+                var_name=vn,
+                go_type=t,
+                value_expr=f"args[{i}]",
+                pkg_alias=alias,
+                struct_types=struct_types,
+            )
+        )
+
+    type_args_exprs = [
+        _qualify_type(t, pkg_alias=alias, struct_types=struct_types) for t in gi.type_args
+    ]
+    call = f"{alias}.{gi.generic_name}[{', '.join(type_args_exprs)}]({', '.join(arg_names)})"
+    if len(gi.results) == 0:
+        lines.append(f"    {call}")
+        lines.append("    return nil, nil")
+    elif len(gi.results) == 1:
+        lines.append(f"    r0 := {call}")
+        if _base_type(gi.results[0]) in struct_types or _base_type(gi.results[0]) in {
+            "time.Time",
+            "time.Duration",
+            "uuid.UUID",
+        }:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return v0, nil")
+        else:
+            lines.append("    return r0, nil")
+    else:
+        lines.append(f"    r0, err := {call}")
+        lines.append("    if err != nil {")
+        lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+        lines.append("    }")
+        if _base_type(gi.results[0]) in struct_types or _base_type(gi.results[0]) in {
+            "time.Time",
+            "time.Duration",
+            "uuid.UUID",
+        }:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return v0, nil")
+        else:
+            lines.append("    return r0, nil")
     lines.append("}")
     return lines
 

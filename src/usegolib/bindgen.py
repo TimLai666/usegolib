@@ -53,6 +53,7 @@ def generate_python_bindings(*, schema: Schema, pkg: str, out_file: Path, opts: 
     """Generate a static Python module from manifest schema for a package."""
     structs = schema.structs_by_pkg.get(pkg, {})
     symbols = schema.symbols_by_pkg.get(pkg, {})
+    generics = schema.generics_by_pkg.get(pkg, {})
     if not symbols:
         raise ValueError(f"no symbols found for package {pkg}")
 
@@ -101,6 +102,14 @@ def generate_python_bindings(*, schema: Schema, pkg: str, out_file: Path, opts: 
     lines.append("}")
     lines.append("")
 
+    if generics:
+        lines.append("_GENERICS: dict[tuple[str, tuple[str, ...]], str] = {")
+        for gname, insts in generics.items():
+            for type_args, sym in insts.items():
+                lines.append(f"    ({gname!r}, {tuple(type_args)!r}): {sym!r},")
+        lines.append("}")
+        lines.append("")
+
     # API wrapper
     api = opts.api_class_name
     lines.append(f"class {api}:")
@@ -114,6 +123,24 @@ def generate_python_bindings(*, schema: Schema, pkg: str, out_file: Path, opts: 
         "schema=self._schema, pkg=handle.package, structs=_STRUCTS)"
     )
     lines.append("")
+
+    if generics:
+        lines.append("    def call_generic(self, name: str, type_args: list[str], *args: Any) -> Any:")
+        lines.append("        key = (name, tuple(type_args))")
+        lines.append("        sym = _GENERICS.get(key)")
+        lines.append("        if sym is None:")
+        lines.append('            raise KeyError(f\"generic instantiation not found: {key!r}\")')
+        lines.append("        r = getattr(self._h, sym)(*args)")
+        lines.append("        sig = self._schema.symbols_by_pkg.get(self._h.package, {}).get(sym)")
+        lines.append("        if sig is None:")
+        lines.append("            return r")
+        lines.append("        _params, results = sig")
+        lines.append("        if not results:")
+        lines.append("            return None")
+        lines.append(
+            "        return usegolib.typed.decode_value(types=self._types, go_type=results[0], v=r)"
+        )
+        lines.append("")
 
     for fn_name, (params, results) in symbols.items():
         # (T, error) is represented as a single successful result.

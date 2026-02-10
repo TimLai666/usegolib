@@ -20,6 +20,11 @@ def main() -> None:
     p_build.add_argument("--out", required=True, help="Output artifact directory.")
     p_build.add_argument("--version", default=None, help="Go module version (remote only; default: @latest).")
     p_build.add_argument("--force", action="store_true", help="Force rebuild even if artifact exists.")
+    p_build.add_argument(
+        "--generics",
+        default=None,
+        help="Path to generics instantiation config JSON (optional).",
+    )
 
     p_pkg = sub.add_parser(
         "package",
@@ -60,6 +65,7 @@ def main() -> None:
             out_dir=Path(args.out),
             version=args.version,
             force=bool(args.force),
+            generics=Path(args.generics) if args.generics else None,
         )
         return
 

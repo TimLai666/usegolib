@@ -62,6 +62,8 @@ class Schema:
     symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]]
     # pkg -> recvType -> methodName -> (params, results)
     methods_by_pkg: dict[str, dict[str, dict[str, tuple[list[str], list[str]]]]]
+    # pkg -> genericName -> typeArgsTuple -> concreteSymbolName
+    generics_by_pkg: dict[str, dict[str, dict[tuple[str, ...], str]]]
 
     @classmethod
     def from_manifest(cls, manifest_schema: dict[str, Any] | None) -> "Schema | None":
@@ -170,7 +172,28 @@ class Schema:
                     list(results),
                 )
 
-        return cls(structs_by_pkg=structs, symbols_by_pkg=symbols_by_pkg, methods_by_pkg=methods_by_pkg)
+        generics_by_pkg: dict[str, dict[str, dict[tuple[str, ...], str]]] = {}
+        raw_generics = manifest_schema.get("generics")
+        if isinstance(raw_generics, list):
+            for g in raw_generics:
+                if not isinstance(g, dict):
+                    continue
+                pkg = g.get("pkg")
+                name = g.get("name")
+                type_args = g.get("type_args")
+                symbol = g.get("symbol")
+                if not (isinstance(pkg, str) and isinstance(name, str) and isinstance(symbol, str)):
+                    continue
+                if not isinstance(type_args, list) or not all(isinstance(x, str) for x in type_args):
+                    continue
+                generics_by_pkg.setdefault(pkg, {}).setdefault(name, {})[tuple(type_args)] = symbol
+
+        return cls(
+            structs_by_pkg=structs,
+            symbols_by_pkg=symbols_by_pkg,
+            methods_by_pkg=methods_by_pkg,
+            generics_by_pkg=generics_by_pkg,
+        )
 
 
 def validate_struct_value(*, schema: Schema, pkg: str, struct: str, value: Any) -> None:

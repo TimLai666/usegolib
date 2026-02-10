@@ -134,6 +134,18 @@ class PackageHandle:
     def typed(self) -> "TypedPackageHandle":
         return TypedPackageHandle(self)
 
+    def generic(self, name: str, type_args: list[str]) -> Callable[..., Any]:
+        if self._schema is None:
+            raise UseGoLibError("generic() requires manifest schema")
+        sym = (
+            self._schema.generics_by_pkg.get(self.package, {})
+            .get(name, {})
+            .get(tuple(type_args))
+        )
+        if sym is None:
+            raise UseGoLibError(f"generic instantiation not found: {self.package}.{name}{type_args!r}")
+        return getattr(self, sym)
+
     def object(self, type_name: str, init: Any | None = None) -> "GoObject":
         if self._schema is not None and init is not None:
             from .typed import encode_value
@@ -247,6 +259,28 @@ class TypedPackageHandle:
         schema = self._base._schema  # noqa: SLF001 - internal linkage
         assert schema is not None
         return TypedGoObject(_base=obj, _types=self._types, _schema=schema, _pkg=self._base.package)
+
+    def generic(self, name: str, type_args: list[str]) -> Callable[..., Any]:
+        schema = self._base._schema  # noqa: SLF001 - internal linkage
+        assert schema is not None
+        sym = schema.generics_by_pkg.get(self._base.package, {}).get(name, {}).get(tuple(type_args))
+        if sym is None:
+            raise UseGoLibError(f"generic instantiation not found: {self._base.package}.{name}{type_args!r}")
+        fn = getattr(self._base, sym)
+
+        def _call(*args: Any) -> Any:
+            result = fn(*args)
+            sig = schema.symbols_by_pkg.get(self._base.package, {}).get(sym)
+            if sig is None:
+                return result
+            _params, results = sig
+            if not results:
+                return result
+            from .typed import decode_value
+
+            return decode_value(types=self._types, go_type=results[0], v=result)
+
+        return _call
 
 
 @dataclass

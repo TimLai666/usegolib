@@ -54,6 +54,13 @@ Remote module build (build machine):
 python -m usegolib build --module github.com/yourorg/insyra --out out/artifact
 ```
 
+Generic functions (build-time instantiation):
+
+```bash
+# Provide explicit generic instantiations as JSON.
+python -m usegolib build --module example.com/mod --out out/artifact --generics generics.json
+```
+
 ```python
 import usegolib
 
@@ -108,6 +115,13 @@ types = th.types
 with th.object("Counter", types.Counter(N=10)) as c:
     snap = c.Snapshot()
     print(snap)  # -> types.Snapshot(...)
+```
+
+Generic calls (runtime helper, schema required):
+
+```python
+fn = h.generic("Id", ["int64"])
+print(fn(123))
 ```
 
 ## Quickstart (generate a distributable Python package project)

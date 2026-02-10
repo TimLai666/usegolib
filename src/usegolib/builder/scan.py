@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from ..errors import BuildError
-from .symbols import ExportedFunc, ExportedMethod, ModuleScan, StructField
+from .symbols import ExportedFunc, ExportedMethod, GenericFuncDef, ModuleScan, StructField
 
 
 def scan_module(*, module_dir: Path) -> ModuleScan:
@@ -87,6 +87,35 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                 ExportedMethod(pkg=pkg, recv=recv, name=name, params=list(params), results=list(results))
             )
 
+        generic_funcs: list[GenericFuncDef] = []
+        for item in obj.get("generic_funcs", []):
+            if not isinstance(item, dict):
+                continue
+            pkg = item.get("pkg")
+            name = item.get("name")
+            type_params = item.get("type_params")
+            params = item.get("params")
+            results = item.get("results")
+            if not (isinstance(pkg, str) and isinstance(name, str)):
+                continue
+            if not isinstance(type_params, list) or not all(isinstance(x, str) for x in type_params):
+                continue
+            if not isinstance(params, list) or not isinstance(results, list):
+                continue
+            if not all(isinstance(t, str) for t in params):
+                continue
+            if not all(isinstance(t, str) for t in results):
+                continue
+            generic_funcs.append(
+                GenericFuncDef(
+                    pkg=pkg,
+                    name=name,
+                    type_params=list(type_params),
+                    params=list(params),
+                    results=list(results),
+                )
+            )
+
         struct_types_by_pkg: dict[str, set[str]] = {}
         st = obj.get("struct_types")
         if isinstance(st, dict):
@@ -145,6 +174,7 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
         return ModuleScan(
             funcs=funcs,
             methods=methods,
+            generic_funcs=generic_funcs,
             struct_types_by_pkg=struct_types_by_pkg,
             structs_by_pkg=structs_by_pkg,
         )
@@ -199,9 +229,18 @@ type outMethod struct {
 	Results []string `json:"results"`
 }
 
+type outGenericFunc struct {
+	Pkg        string   `json:"pkg"`
+	Name       string   `json:"name"`
+	TypeParams []string `json:"type_params"`
+	Params     []string `json:"params"`
+	Results    []string `json:"results"`
+}
+
 type outObj struct {
 	Funcs []outFunc `json:"funcs"`
 	Methods []outMethod `json:"methods"`
+	GenericFuncs []outGenericFunc `json:"generic_funcs"`
 	StructTypes map[string][]string `json:"struct_types"`
 	Structs map[string][]outStruct `json:"structs"`
 }
@@ -244,6 +283,7 @@ func main() {
 	out := outObj{
 		Funcs:       make([]outFunc, 0, 128),
 		Methods:     make([]outMethod, 0, 128),
+		GenericFuncs: make([]outGenericFunc, 0, 128),
 		StructTypes: map[string][]string{},
 		Structs:     map[string][]outStruct{},
 	}
@@ -279,15 +319,42 @@ func main() {
 				if fd.Name == nil || !fd.Name.IsExported() {
 					continue
 				}
-				// Skip generic functions for v0.
-				if fd.Type != nil && fd.Type.TypeParams != nil && len(fd.Type.TypeParams.List) > 0 {
+				// Exported generic functions are reported separately.
+				if fd.Recv == nil && fd.Type != nil && fd.Type.TypeParams != nil && len(fd.Type.TypeParams.List) > 0 {
+					typeParams := []string{}
+					for _, tp := range fd.Type.TypeParams.List {
+						if tp == nil || len(tp.Names) == 0 {
+							continue
+						}
+						for _, nm := range tp.Names {
+							if nm == nil || nm.Name == "" {
+								continue
+							}
+							typeParams = append(typeParams, nm.Name)
+						}
+					}
+					if len(typeParams) == 0 {
+						continue
+					}
+					params := fieldListTypes(fd.Type.Params, im)
+					results := fieldListTypes(fd.Type.Results, im)
+					if params == nil || results == nil {
+						continue
+					}
+					out.GenericFuncs = append(out.GenericFuncs, outGenericFunc{
+						Pkg:        p.ImportPath,
+						Name:       fd.Name.Name,
+						TypeParams: typeParams,
+						Params:     params,
+						Results:    results,
+					})
 					continue
 				}
 
 				// Top-level function.
 				if fd.Recv == nil {
-				params := fieldListTypes(fd.Type.Params, im)
-				results := fieldListTypes(fd.Type.Results, im)
+					params := fieldListTypes(fd.Type.Params, im)
+					results := fieldListTypes(fd.Type.Results, im)
 				if params == nil || results == nil {
 					continue
 				}

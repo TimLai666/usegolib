@@ -78,7 +78,7 @@ OpenSpec change:
 
 This is planned after Milestone 5 (v1.0 readiness) unless explicitly reprioritized.
 
-Current v0.x behavior: generic functions are ignored by the build scanner.
+Current v0.x behavior: generic functions are ignored unless instantiated via `usegolib build --generics`.
 
 - Exported method support (implemented)
   - Go-side object handles (opaque ids) to avoid serializing receivers on every call
@@ -86,7 +86,7 @@ Current v0.x behavior: generic functions are ignored by the build scanner.
   - Python API: `PackageHandle.object(type_name, init=None) -> GoObject` and `TypedPackageHandle.object(...) -> TypedGoObject`
   - Schema/manifest: `schema.methods` (receiver + method signature) for runtime validation and typed decoding
 - Generic function support (Phase A)
-  - support calling generic functions by generating concrete instantiations at build time for a configured set of type arguments
-  - avoid implicit type inference across the ABI (must be explicit in schema/bindings)
+  - support calling exported generic functions by generating concrete instantiations at build time for an explicit set of type arguments (implemented via `usegolib build --generics <json>`)
+  - avoid implicit type inference across the ABI (type arguments are explicit in manifest schema)
 - Generic function support (Phase B)
-  - expand supported instantiation patterns and improve Python typing/bindgen output
+  - improve Python ergonomics via `handle.generic(name, type_args)` helper and bindgen output for instantiated symbols

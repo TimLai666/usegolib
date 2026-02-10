@@ -34,5 +34,25 @@ class StructField:
 class ModuleScan:
     funcs: list[ExportedFunc]
     methods: list[ExportedMethod]
+    generic_funcs: list["GenericFuncDef"]
     struct_types_by_pkg: dict[str, set[str]]
     structs_by_pkg: dict[str, dict[str, list[StructField]]]
+
+
+@dataclass(frozen=True)
+class GenericFuncDef:
+    pkg: str
+    name: str
+    type_params: list[str]
+    params: list[str]
+    results: list[str]
+
+
+@dataclass(frozen=True)
+class GenericInstantiation:
+    pkg: str
+    generic_name: str
+    type_args: list[str]
+    symbol: str
+    params: list[str]
+    results: list[str]

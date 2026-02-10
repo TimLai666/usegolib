@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from ..errors import BuildError
 from .fingerprint import fingerprint_local_module_dir
@@ -14,7 +16,7 @@ from .lock import leaf_lock
 from .resolve import resolve_module_target
 from .reuse import artifact_ready
 from .scan import scan_module
-from .symbols import ExportedFunc, ExportedMethod
+from .symbols import ExportedFunc, ExportedMethod, GenericFuncDef, GenericInstantiation
 from .zig import ensure_zig
 
 
@@ -109,6 +111,139 @@ def _is_supported_method_sig(m: ExportedMethod, *, struct_types: set[str] | None
     return True
 
 
+def _substitute_type(t: str, mapping: dict[str, str]) -> str:
+    t = t.strip()
+    if t.startswith("*"):
+        return "*" + _substitute_type(t[1:], mapping)
+    if t.startswith("[]"):
+        return "[]" + _substitute_type(t[2:], mapping)
+    if t.startswith("map[string]"):
+        return "map[string]" + _substitute_type(t[len("map[string]") :], mapping)
+    return mapping.get(t, t)
+
+
+def _mangle_type_for_symbol(t: str) -> str:
+    t = t.strip()
+    # Stable-ish mangling for type argument tokens.
+    t = t.replace("map[string]", "mapstr_")
+    t = t.replace("[]", "slice_")
+    t = t.replace("*", "ptr_")
+    for ch in ["/", ".", "[", "]", " ", "{", "}", ",", ":", ";", "(", ")", "<", ">", "|", "~", "&", "!"]:
+        t = t.replace(ch, "_")
+    while "__" in t:
+        t = t.replace("__", "_")
+    return t.strip("_") or "T"
+
+
+def _default_generic_symbol(name: str, type_args: list[str]) -> str:
+    suffix = "_".join(_mangle_type_for_symbol(t) for t in type_args)
+    return f"{name}__{suffix}" if suffix else f"{name}__inst"
+
+
+def _load_generic_instantiations(
+    *,
+    generics: Path,
+    defs: list[GenericFuncDef],
+    struct_types_by_pkg: dict[str, set[str]],
+) -> list[GenericInstantiation]:
+    generics = Path(generics)
+    if not generics.exists():
+        raise BuildError(f"generics config not found: {generics}")
+    try:
+        obj = json.loads(generics.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise BuildError(f"failed to parse generics config JSON: {e}") from e
+    insts = obj.get("instantiations") if isinstance(obj, dict) else None
+    if not isinstance(insts, list):
+        raise BuildError("generics config must be a JSON object with an 'instantiations' list")
+
+    defs_by_pkg_name: dict[tuple[str, str], GenericFuncDef] = {}
+    for d in defs:
+        defs_by_pkg_name[(d.pkg, d.name)] = d
+
+    out: list[GenericInstantiation] = []
+    seen_symbols: set[tuple[str, str]] = set()
+    ident_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    for item in insts:
+        if not isinstance(item, dict):
+            continue
+        pkg = item.get("pkg")
+        name = item.get("name")
+        type_args = item.get("type_args")
+        symbol = item.get("symbol")
+        if not isinstance(pkg, str) or not isinstance(name, str):
+            raise BuildError("generics instantiation entry must include 'pkg' and 'name' strings")
+        if not isinstance(type_args, list) or not all(isinstance(x, str) for x in type_args):
+            raise BuildError("generics instantiation entry must include 'type_args' list[str]")
+        if symbol is None:
+            symbol = _default_generic_symbol(name, list(type_args))
+        if not isinstance(symbol, str) or not symbol:
+            raise BuildError("generics instantiation 'symbol' must be a non-empty string when provided")
+        if not ident_re.fullmatch(symbol):
+            raise BuildError(
+                f"generics instantiation 'symbol' must be a valid identifier (got {symbol!r})"
+            )
+
+        d = defs_by_pkg_name.get((pkg, name))
+        if d is None:
+            avail = sorted({f"{dp}.{dn}" for (dp, dn) in defs_by_pkg_name.keys()})
+            raise BuildError(
+                f"generic function not found: {pkg}.{name}. "
+                f"available: {', '.join(avail) if avail else '(none)'}"
+            )
+        if len(type_args) != len(d.type_params):
+            raise BuildError(
+                f"generic instantiation arity mismatch for {pkg}.{name}: "
+                f"expected {len(d.type_params)} type args, got {len(type_args)}"
+            )
+
+        # Validate type args: must be supported scalar/adapter/container or a named struct in the same pkg.
+        struct_types = struct_types_by_pkg.get(pkg, set())
+        for ta in type_args:
+            base = ta.strip()
+            while True:
+                if base.startswith("*"):
+                    base = base[1:].strip()
+                    continue
+                if base.startswith("[]"):
+                    base = base[2:].strip()
+                    continue
+                if base.startswith("map[string]"):
+                    base = base[len("map[string]") :].strip()
+                    continue
+                break
+            if base in struct_types:
+                continue
+            if not _is_supported_type(ta, struct_types=struct_types):
+                raise BuildError(f"unsupported generic type arg: {ta} (for {pkg}.{name})")
+
+        mapping = {tp: ta for tp, ta in zip(d.type_params, type_args, strict=True)}
+        inst_params = [_substitute_type(t, mapping) for t in d.params]
+        inst_results = [_substitute_type(t, mapping) for t in d.results]
+
+        gi = GenericInstantiation(
+            pkg=pkg,
+            generic_name=name,
+            type_args=list(type_args),
+            symbol=symbol,
+            params=inst_params,
+            results=inst_results,
+        )
+        if not _is_supported_sig(
+            ExportedFunc(pkg=pkg, name=symbol, params=inst_params, results=inst_results),
+            struct_types=struct_types_by_pkg.get(pkg),
+        ):
+            raise BuildError(f"generic instantiation produces unsupported signature: {pkg}:{symbol}")
+
+        key = (pkg, symbol)
+        if key in seen_symbols:
+            raise BuildError(f"duplicate generic symbol: {pkg}:{symbol}")
+        seen_symbols.add(key)
+        out.append(gi)
+
+    return out
+
+
 def _bridge_go_mod(
     *,
     bridge_dir: Path,
@@ -172,6 +307,7 @@ def build_artifact(
     out_dir: Path,
     version: str | None = None,
     force: bool = False,
+    generics: Path | None = None,
 ) -> Path:
     resolved = resolve_module_target(target=str(module), version=version)
     module_dir = resolved.module_dir
@@ -183,6 +319,7 @@ def build_artifact(
     scan = scan_module(module_dir=module_dir)
     exported = scan.funcs
     methods = scan.methods
+    generic_defs = scan.generic_funcs
 
     exported = [
         fn
@@ -194,6 +331,14 @@ def build_artifact(
         for m in methods
         if _is_supported_method_sig(m, struct_types=scan.struct_types_by_pkg.get(m.pkg))
     ]
+
+    generic_insts: list[GenericInstantiation] = []
+    if generics is not None:
+        generic_insts = _load_generic_instantiations(
+            generics=Path(generics),
+            defs=generic_defs,
+            struct_types_by_pkg=scan.struct_types_by_pkg,
+        )
 
     with tempfile.TemporaryDirectory(prefix="usegolib-bridge-") as td:
         bridge_dir = Path(td)
@@ -223,6 +368,13 @@ def build_artifact(
                 adapter_types.add("time.Duration")
             if "uuid.UUID" in m.params or "uuid.UUID" in m.results:
                 adapter_types.add("uuid.UUID")
+        for gi in generic_insts:
+            if "time.Time" in gi.params or "time.Time" in gi.results:
+                adapter_types.add("time.Time")
+            if "time.Duration" in gi.params or "time.Duration" in gi.results:
+                adapter_types.add("time.Duration")
+            if "uuid.UUID" in gi.params or "uuid.UUID" in gi.results:
+                adapter_types.add("uuid.UUID")
         for pkg, by_name in scan.structs_by_pkg.items():
             for _name, fields in by_name.items():
                 for f in fields:
@@ -238,6 +390,7 @@ def build_artifact(
             module_path=module_path,
             functions=exported,
             methods=methods,
+            generic_instantiations=generic_insts,
             struct_types_by_pkg=scan.struct_types_by_pkg,
             adapter_types=adapter_types,
         )
@@ -286,6 +439,28 @@ def build_artifact(
             go_version = _run(["go", "version"], cwd=module_dir).strip()
             zig_version = _run([str(zig), "version"], cwd=module_dir).strip()
 
+            all_symbol_entries: list[dict[str, Any]] = [
+                {
+                    "pkg": fn.pkg,
+                    "name": fn.name,
+                    "params": fn.params,
+                    "results": fn.results,
+                }
+                for fn in exported
+            ]
+            all_symbol_entries.extend(
+                [
+                    {
+                        "pkg": gi.pkg,
+                        "name": gi.symbol,
+                        "params": gi.params,
+                        "results": gi.results,
+                        "generic": {"name": gi.generic_name, "type_args": gi.type_args},
+                    }
+                    for gi in generic_insts
+                ]
+            )
+
             manifest = {
                 "manifest_version": 1,
                 "abi_version": 0,
@@ -296,15 +471,7 @@ def build_artifact(
                 "go_version": go_version,
                 "zig_version": zig_version,
                 "packages": packages,
-                "symbols": [
-                    {
-                        "pkg": fn.pkg,
-                        "name": fn.name,
-                        "params": fn.params,
-                        "results": fn.results,
-                    }
-                    for fn in exported
-                ],
+                "symbols": list(all_symbol_entries),
                 "schema": {
                     "structs": {
                         pkg: {
@@ -327,15 +494,7 @@ def build_artifact(
                         }
                         for pkg in sorted(scan.structs_by_pkg.keys())
                     },
-                    "symbols": [
-                        {
-                            "pkg": fn.pkg,
-                            "name": fn.name,
-                            "params": fn.params,
-                            "results": fn.results,
-                        }
-                        for fn in exported
-                    ],
+                    "symbols": list(all_symbol_entries),
                     "methods": [
                         {
                             "pkg": m.pkg,
@@ -345,6 +504,15 @@ def build_artifact(
                             "results": m.results,
                         }
                         for m in methods
+                    ],
+                    "generics": [
+                        {
+                            "pkg": gi.pkg,
+                            "name": gi.generic_name,
+                            "type_args": gi.type_args,
+                            "symbol": gi.symbol,
+                        }
+                        for gi in generic_insts
                     ],
                 },
                 "library": {"path": lib_name, "sha256": sha},
