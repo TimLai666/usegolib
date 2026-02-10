@@ -45,7 +45,7 @@ python -m pip install -e ".[dev]"
 Build an artifact from a local Go module directory:
 
 ```bash
-python -m usegolib build --module path/to/go/module --out out/artifact
+usegolib build --module path/to/go/module --out out/artifact
 ```
 
 Import from the artifact root and call exported functions:
@@ -131,7 +131,7 @@ with th.object("Counter", types.Counter(N=10)) as c:
 Generic functions require explicit build-time instantiation:
 
 ```bash
-python -m usegolib build --module example.com/mod --out out/artifact --generics generics.json
+usegolib build --module example.com/mod --out out/artifact --generics generics.json
 ```
 
 At runtime (schema required), use the helper:
@@ -146,7 +146,7 @@ print(fn(123))
 Generate a distributable Python package project embedding artifacts:
 
 ```bash
-python -m usegolib package --module path/to/go/module --python-package-name mypkg --out out/
+usegolib package --module path/to/go/module --python-package-name mypkg --out out/
 ```
 
 Install the generated project:
@@ -171,6 +171,7 @@ print(mypkg.AddInt(1, 2))
 
 - `docs/roadmap.md`
 - `docs/abi.md`
+- `docs/cli.md`
 - `docs/versioning.md`
 - `docs/compatibility.md`
 - `docs/testing.md`

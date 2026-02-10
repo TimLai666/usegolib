@@ -28,7 +28,7 @@ def test_resolve_missing_go_raises_build_error(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(BuildError, match=r"Go toolchain not found"):
-        resolve._go_mod_download_json("example.com/mod@v1.2.3")  # noqa: SLF001
+        resolve._go_mod_download_json("example.com/mod@v1.2.3", env=None)  # noqa: SLF001
 
 
 def test_scan_missing_go_raises_build_error(monkeypatch, tmp_path):
@@ -42,4 +42,3 @@ def test_scan_missing_go_raises_build_error(monkeypatch, tmp_path):
 
     with pytest.raises(BuildError, match=r"Go toolchain not found"):
         scan_module(module_dir=tmp_path)
-

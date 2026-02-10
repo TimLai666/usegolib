@@ -20,6 +20,13 @@ Fix:
 - Pass an explicit `version="vX.Y.Z"` (or `"local"` for local module builds), or
 - Remove/relocate the extra version(s) under the artifact root.
 
+Tip: you can delete cached artifacts via the CLI:
+
+```bash
+usegolib artifact rm --module example.com/mod --version vX.Y.Z --yes
+usegolib artifact rm --module example.com/mod --all-versions --yes
+```
+
 ### `VersionConflictError`
 
 Meaning: the current Python process already loaded one version of a module, and you're trying to load a different version (possibly via a subpackage import).
@@ -74,4 +81,3 @@ If you're developing on Windows, run Linux tests via:
 ```
 
 If integration tests fail because Go is missing in WSL, the integration runner will bootstrap Go automatically (no sudo).
-

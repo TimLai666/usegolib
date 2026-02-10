@@ -37,7 +37,7 @@ def test_resolve_remote_defaults_to_at_latest(monkeypatch):
 
     seen: list[str] = []
 
-    def fake_download(arg: str) -> dict:
+    def fake_download(arg: str, *, env=None) -> dict:  # noqa: ANN001
         seen.append(arg)
         return {"Path": "example.com/remote", "Version": "v1.2.3", "Dir": "/tmp/x"}
 
@@ -55,7 +55,7 @@ def test_resolve_remote_subpackage_trims_segments(monkeypatch):
 
     calls: list[str] = []
 
-    def fake_download(arg: str) -> dict:
+    def fake_download(arg: str, *, env=None) -> dict:  # noqa: ANN001
         calls.append(arg)
         if arg.startswith("example.com/mod/subpkg@"):
             raise BuildError("fail")

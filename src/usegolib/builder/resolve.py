@@ -16,27 +16,6 @@ class ResolvedModule:
     module_dir: Path
 
 
-def resolve_module_target(*, target: str, version: str | None) -> ResolvedModule:
-    """Resolve a builder target to a local module directory and concrete version.
-
-    - If `target` is a local directory, locate the nearest parent containing go.mod
-      (allows passing a subdirectory of a module) and return version "local".
-    - Otherwise treat `target` as a Go import path (module or package path) and use
-      `go mod download -json` to resolve module root and version (defaults to @latest).
-    """
-    p = Path(target)
-    if p.exists() and p.is_dir():
-        module_dir = _find_module_root(p.resolve())
-        module_path = _read_module_path(module_dir)
-        return ResolvedModule(module_path=module_path, version="local", module_dir=module_dir)
-
-    wanted = version
-    if wanted is None or wanted == "latest":
-        wanted = "@latest"
-    mod_path, mod_version, mod_dir = _resolve_remote_module(import_path=target, wanted=wanted)
-    return ResolvedModule(module_path=mod_path, version=mod_version, module_dir=mod_dir)
-
-
 def _read_module_path(module_dir: Path) -> str:
     go_mod = module_dir / "go.mod"
     if not go_mod.exists():
@@ -59,7 +38,36 @@ def _find_module_root(start: Path) -> Path:
     raise BuildError(f"go.mod not found in {start} or any parent directory")
 
 
-def _resolve_remote_module(*, import_path: str, wanted: str) -> tuple[str, str, Path]:
+def resolve_module_target(
+    *, target: str, version: str | None, env: dict[str, str] | None = None
+) -> ResolvedModule:
+    """Resolve a builder target to a local module directory and concrete version.
+
+    - If `target` is a local directory, locate the nearest parent containing go.mod
+      (allows passing a subdirectory of a module) and return version "local".
+    - Otherwise treat `target` as a Go import path (module or package path) and use
+      `go mod download -json` to resolve module root and version (defaults to @latest).
+
+    `env` is passed through to `go` subprocesses (for example to set `GOMODCACHE`).
+    """
+    p = Path(target)
+    if p.exists() and p.is_dir():
+        module_dir = _find_module_root(p.resolve())
+        module_path = _read_module_path(module_dir)
+        return ResolvedModule(module_path=module_path, version="local", module_dir=module_dir)
+
+    wanted = version
+    if wanted is None or wanted == "latest":
+        wanted = "@latest"
+    mod_path, mod_version, mod_dir = _resolve_remote_module(
+        import_path=target, wanted=wanted, env=env
+    )
+    return ResolvedModule(module_path=mod_path, version=mod_version, module_dir=mod_dir)
+
+
+def _resolve_remote_module(
+    *, import_path: str, wanted: str, env: dict[str, str] | None
+) -> tuple[str, str, Path]:
     # For non-module package paths, trim segments until download succeeds.
     candidate = import_path
     while True:
@@ -67,7 +75,7 @@ def _resolve_remote_module(*, import_path: str, wanted: str) -> tuple[str, str, 
             # `go mod download` uses special queries like `@latest`.
             # Allow callers to pass `wanted` with or without the leading "@".
             arg = f"{candidate}{wanted}" if wanted.startswith("@") else f"{candidate}@{wanted}"
-            info = _go_mod_download_json(arg)
+            info = _go_mod_download_json(arg, env=env)
             mod_path = str(info["Path"])
             mod_version = str(info["Version"])
             mod_dir = Path(str(info["Dir"])).resolve()
@@ -79,7 +87,7 @@ def _resolve_remote_module(*, import_path: str, wanted: str) -> tuple[str, str, 
             candidate = candidate.rsplit("/", 1)[0]
 
 
-def _go_mod_download_json(arg: str) -> dict:
+def _go_mod_download_json(arg: str, *, env: dict[str, str] | None) -> dict:
     # `go mod download` does not require being inside a module, but to be robust
     # across environments, run in a temp directory.
     with tempfile.TemporaryDirectory(prefix="usegolib-moddl-") as td:
@@ -87,6 +95,7 @@ def _go_mod_download_json(arg: str) -> dict:
             proc = subprocess.run(
                 ["go", "mod", "download", "-json", arg],
                 cwd=td,
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

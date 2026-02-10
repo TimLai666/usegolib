@@ -9,7 +9,7 @@ from ..errors import BuildError
 from .symbols import ExportedFunc, ExportedMethod, GenericFuncDef, ModuleScan, StructField
 
 
-def scan_module(*, module_dir: Path) -> ModuleScan:
+def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> ModuleScan:
     """Scan exported top-level functions by parsing Go source (not `go doc` text).
 
     This is used by the builder to decide which functions are callable through the
@@ -36,6 +36,7 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
             proc = subprocess.run(
                 ["go", "run", ".", "--module-dir", str(module_dir)],
                 cwd=str(scan_dir),
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -210,8 +211,8 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
         )
 
 
-def scan_exported_funcs(*, module_dir: Path) -> list[ExportedFunc]:
-    return scan_module(module_dir=module_dir).funcs
+def scan_exported_funcs(*, module_dir: Path, env: dict[str, str] | None = None) -> list[ExportedFunc]:
+    return scan_module(module_dir=module_dir, env=env).funcs
 
 
 def _scanner_go_source() -> str:

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,8 +58,8 @@ def _read_module_path(module_dir: Path) -> str:
     raise BuildError("failed to parse module path from go.mod")
 
 
-def _list_packages(module_dir: Path) -> list[str]:
-    out = _run(["go", "list", "./..."], cwd=module_dir)
+def _list_packages(module_dir: Path, *, env: dict[str, str] | None = None) -> list[str]:
+    out = _run(["go", "list", "./..."], cwd=module_dir, env=env)
     pkgs = [ln.strip() for ln in out.splitlines() if ln.strip()]
     # Exclude internal packages (Go import rules).
     return [p for p in pkgs if "/internal/" not in p and not p.endswith("/internal")]
@@ -323,15 +324,25 @@ def build_artifact(
     version: str | None = None,
     force: bool = False,
     generics: Path | None = None,
+    gomodcache_dir: Path | None = None,
+    clean_gomodcache: bool = False,
 ) -> Path:
-    resolved = resolve_module_target(target=str(module), version=version)
+    env_base = dict(os.environ)
+    if gomodcache_dir is not None:
+        gomodcache_dir = Path(gomodcache_dir).resolve()
+        if clean_gomodcache and gomodcache_dir.exists():
+            shutil.rmtree(gomodcache_dir, ignore_errors=True)
+        gomodcache_dir.mkdir(parents=True, exist_ok=True)
+        env_base["GOMODCACHE"] = str(gomodcache_dir)
+
+    resolved = resolve_module_target(target=str(module), version=version, env=env_base)
     module_dir = resolved.module_dir
     out_root = Path(out_dir).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
 
     module_path = resolved.module_path
-    packages = _list_packages(module_dir)
-    scan = scan_module(module_dir=module_dir)
+    packages = _list_packages(module_dir, env=env_base)
+    scan = scan_module(module_dir=module_dir, env=env_base)
     exported = scan.funcs
     methods = scan.methods
     generic_defs = scan.generic_funcs
@@ -449,7 +460,7 @@ def build_artifact(
             lib_path = out_leaf / lib_name
 
             zig = ensure_zig()
-            env = dict(os.environ)
+            env = dict(env_base)
             env["CGO_ENABLED"] = "1"
             env["CC"] = f"{zig} cc"
 

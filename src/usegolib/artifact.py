@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -262,3 +263,81 @@ def resolve_manifest(
 
     # version specified: take first (should be unique in a well-formed artifact dir)
     return candidates[0]
+
+
+def find_manifest_dirs(
+    artifact_root: Path,
+    *,
+    package: str,
+    version: str | None,
+    all_versions: bool = False,
+    goos: str | None = None,
+    goarch: str | None = None,
+) -> list[Path]:
+    """Locate artifact manifest directories matching the filters.
+
+    This is primarily used for cache management commands (delete/rebuild).
+    """
+    if version is None and not all_versions:
+        raise ValueError("version must be provided unless all_versions=True")
+
+    goos = goos or host_goos()
+    goarch = goarch or host_goarch()
+
+    root = Path(artifact_root)
+    out: list[Path] = []
+    for d in _scan_manifest_dirs(root):
+        try:
+            m = read_manifest(d)
+        except Exception:
+            continue
+        if m.goos != goos or m.goarch != goarch:
+            continue
+        if package not in m.packages:
+            continue
+        if version is not None and m.version != version:
+            continue
+        out.append(Path(d))
+    return out
+
+
+def delete_artifacts(
+    artifact_root: Path,
+    *,
+    package: str,
+    version: str | None,
+    all_versions: bool = False,
+    goos: str | None = None,
+    goarch: str | None = None,
+) -> list[Path]:
+    """Delete cached artifact directories and rebuild the index.
+
+    Returns the list of deleted manifest directories.
+    """
+    root = Path(artifact_root)
+    dirs = find_manifest_dirs(
+        root,
+        package=package,
+        version=version,
+        all_versions=all_versions,
+        goos=goos,
+        goarch=goarch,
+    )
+    deleted: list[Path] = []
+    for d in dirs:
+        try:
+            # Delete the platform leaf dir containing manifest.json + shared lib.
+            shutil.rmtree(d, ignore_errors=False)
+            deleted.append(d)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Best-effort deletion: if it fails, continue to avoid partial cleanup blocking.
+            continue
+
+    try:
+        _write_index_atomic(root, _build_index(root))
+    except Exception:
+        pass
+
+    return deleted
