@@ -32,6 +32,12 @@
 python -m usegolib build --module path/to/go/module --out out/artifact
 ```
 
+Remote module build (build machine):
+
+```bash
+python -m usegolib build --module github.com/yourorg/insyra --out out/artifact
+```
+
 ```python
 import usegolib
 

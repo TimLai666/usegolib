@@ -68,9 +68,21 @@ OpenSpec change:
 - v0.5: Type bridge Level 2 (`map[string]T`)
 - v0.6: Type bridge Level 3 Phase A (record structs)
 
+### Milestone 6 (API Expansion: Methods + Generics) -> v0.7 - v0.9
+
+Current v0.x behavior: exported methods and generic functions are ignored by the build scanner.
+
+- v0.7: Exported method support
+  - allow calling exported methods by generating wrapper functions in the bridge (receiver passed explicitly)
+  - define naming and overload rules in schema/manifest (avoid collisions)
+- v0.8: Generic function support (Phase A)
+  - support calling generic functions by generating concrete instantiations at build time for a configured set of type arguments
+  - avoid implicit type inference across the ABI (must be explicit in schema/bindings)
+- v0.9: Generics (Phase B)
+  - expand supported instantiation patterns and improve Python typing/bindgen output
+
 ### Milestone 5 (ABI Stability + Compatibility Policy) -> v1.0
 
 - ABI/manfiest versioning policy
 - security hardening (hash verification, restricted downloads)
 - production documentation (troubleshooting, compatibility matrix)
-

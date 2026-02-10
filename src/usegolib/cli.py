@@ -12,7 +12,11 @@ def main() -> None:
     sub.add_parser("version", help="Print usegolib version.")
 
     p_build = sub.add_parser("build", help="Build a Go module into an artifact directory.")
-    p_build.add_argument("--module", required=True, help="Go module directory path (v0).")
+    p_build.add_argument(
+        "--module",
+        required=True,
+        help="Go module directory path OR Go module/package import path (v0).",
+    )
     p_build.add_argument("--out", required=True, help="Output artifact directory.")
     p_build.add_argument("--version", default=None, help="Go module version (remote only; default: @latest).")
     p_build.add_argument("--force", action="store_true", help="Force rebuild even if artifact exists.")
@@ -21,7 +25,11 @@ def main() -> None:
         "package",
         help="Generate a Python package project embedding the built artifact (v0).",
     )
-    p_pkg.add_argument("--module", required=True, help="Go module directory path (v0).")
+    p_pkg.add_argument(
+        "--module",
+        required=True,
+        help="Go module directory path OR Go module/package import path (v0).",
+    )
     p_pkg.add_argument("--python-package-name", required=True, help="Python package name to generate.")
     p_pkg.add_argument("--out", required=True, help="Output directory for the generated project.")
     p_pkg.add_argument("--version", default=None, help="Go module version (remote only; default: @latest).")
