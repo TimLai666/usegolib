@@ -120,6 +120,7 @@ print(mypkg.AddInt(1, 2))
 - `docs/compatibility.md`: supported platforms and toolchain pins
 - `docs/security.md`: security boundaries and current hardening
 - `docs/reproducible-builds.md`: reproducible build guidance
+- `docs/troubleshooting.md`: common errors and remedies
 
 ## Releasing
 
