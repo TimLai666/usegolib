@@ -158,6 +158,12 @@ class PackageHandle:
 
             raise UseGoLibError(f"{err.type}: {err.message}")
 
+        if self._schema is not None:
+            doc = self._schema.symbol_docs_by_pkg.get(self.package, {}).get(name)
+            if doc:
+                # Best-effort: attach GoDoc to the dynamic callable.
+                _call.__doc__ = doc
+
         return _call
 
     @property
@@ -419,6 +425,16 @@ class GoObject:
             if err.type == "UnsupportedSignatureError":
                 raise UnsupportedSignatureError(err.message)
             raise UseGoLibError(f"{err.type}: {err.message}")
+
+        schema = self._pkg._schema  # noqa: SLF001 - internal linkage
+        if schema is not None:
+            doc = (
+                schema.method_docs_by_pkg.get(self._pkg.package, {})
+                .get(self._type, {})
+                .get(name)
+            )
+            if doc:
+                _call.__doc__ = doc
 
         return _call
 

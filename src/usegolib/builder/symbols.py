@@ -9,6 +9,7 @@ class ExportedFunc:
     name: str
     params: list[str]
     results: list[str]
+    doc: str | None = None
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class ExportedMethod:
     name: str
     params: list[str]
     results: list[str]
+    doc: str | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class GenericFuncDef:
     type_params: list[str]
     params: list[str]
     results: list[str]
+    doc: str | None = None
 
 
 @dataclass(frozen=True)

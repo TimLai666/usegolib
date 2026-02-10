@@ -460,6 +460,7 @@ def build_artifact(
                     "name": fn.name,
                     "params": fn.params,
                     "results": fn.results,
+                    "doc": fn.doc,
                 }
                 for fn in exported
             ]
@@ -524,6 +525,7 @@ def build_artifact(
                             "name": m.name,
                             "params": m.params,
                             "results": m.results,
+                            "doc": m.doc,
                         }
                         for m in methods
                     ],

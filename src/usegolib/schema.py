@@ -62,10 +62,13 @@ class Schema:
     # pkg -> structName -> schema
     structs_by_pkg: dict[str, dict[str, StructSchema]]
     symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]]
+    symbol_docs_by_pkg: dict[str, dict[str, str]]
     # pkg -> recvType -> methodName -> (params, results)
     methods_by_pkg: dict[str, dict[str, dict[str, tuple[list[str], list[str]]]]]
+    method_docs_by_pkg: dict[str, dict[str, dict[str, str]]]
     # pkg -> genericName -> typeArgsTuple -> concreteSymbolName
     generics_by_pkg: dict[str, dict[str, dict[tuple[str, ...], str]]]
+    generic_docs_by_pkg: dict[str, dict[str, str]]
 
     @classmethod
     def from_manifest(cls, manifest_schema: dict[str, Any] | None) -> "Schema | None":
@@ -135,6 +138,7 @@ class Schema:
                     structs[pkg] = pkg_out
 
         symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]] = {}
+        symbol_docs_by_pkg: dict[str, dict[str, str]] = {}
         raw_symbols = manifest_schema.get("symbols")
         if isinstance(raw_symbols, list):
             for s in raw_symbols:
@@ -144,6 +148,7 @@ class Schema:
                 name = s.get("name")
                 params = s.get("params")
                 results = s.get("results")
+                doc = s.get("doc")
                 if not isinstance(pkg, str) or not isinstance(name, str):
                     continue
                 if not isinstance(params, list) or not isinstance(results, list):
@@ -153,8 +158,11 @@ class Schema:
                 ):
                     continue
                 symbols_by_pkg.setdefault(pkg, {})[name] = (list(params), list(results))
+                if isinstance(doc, str) and doc.strip():
+                    symbol_docs_by_pkg.setdefault(pkg, {})[name] = doc.strip()
 
         methods_by_pkg: dict[str, dict[str, dict[str, tuple[list[str], list[str]]]]] = {}
+        method_docs_by_pkg: dict[str, dict[str, dict[str, str]]] = {}
         raw_methods = manifest_schema.get("methods")
         if isinstance(raw_methods, list):
             for m in raw_methods:
@@ -165,6 +173,7 @@ class Schema:
                 name = m.get("name")
                 params = m.get("params")
                 results = m.get("results")
+                doc = m.get("doc")
                 if not (isinstance(pkg, str) and isinstance(recv, str) and isinstance(name, str)):
                     continue
                 if not isinstance(params, list) or not isinstance(results, list):
@@ -177,8 +186,11 @@ class Schema:
                     list(params),
                     list(results),
                 )
+                if isinstance(doc, str) and doc.strip():
+                    method_docs_by_pkg.setdefault(pkg, {}).setdefault(recv, {})[name] = doc.strip()
 
         generics_by_pkg: dict[str, dict[str, dict[tuple[str, ...], str]]] = {}
+        generic_docs_by_pkg: dict[str, dict[str, str]] = {}
         raw_generics = manifest_schema.get("generics")
         if isinstance(raw_generics, list):
             for g in raw_generics:
@@ -188,17 +200,23 @@ class Schema:
                 name = g.get("name")
                 type_args = g.get("type_args")
                 symbol = g.get("symbol")
+                doc = g.get("doc")
                 if not (isinstance(pkg, str) and isinstance(name, str) and isinstance(symbol, str)):
                     continue
                 if not isinstance(type_args, list) or not all(isinstance(x, str) for x in type_args):
                     continue
                 generics_by_pkg.setdefault(pkg, {}).setdefault(name, {})[tuple(type_args)] = symbol
+                if isinstance(doc, str) and doc.strip():
+                    generic_docs_by_pkg.setdefault(pkg, {})[name] = doc.strip()
 
         return cls(
             structs_by_pkg=structs,
             symbols_by_pkg=symbols_by_pkg,
+            symbol_docs_by_pkg=symbol_docs_by_pkg,
             methods_by_pkg=methods_by_pkg,
+            method_docs_by_pkg=method_docs_by_pkg,
             generics_by_pkg=generics_by_pkg,
+            generic_docs_by_pkg=generic_docs_by_pkg,
         )
 
 

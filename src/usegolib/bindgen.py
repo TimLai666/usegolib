@@ -69,6 +69,15 @@ def generate_python_bindings(*, schema: Schema, pkg: str, out_file: Path, opts: 
     lines.append("from usegolib.handle import PackageHandle")
     lines.append("")
 
+    def _emit_docstring(doc: str, *, indent: str) -> None:
+        doc = doc.replace('"""', '\\"\\"\\"').strip()
+        if not doc:
+            return
+        lines.append(f'{indent}"""')
+        for ln in doc.splitlines():
+            lines.append(f"{indent}{ln}".rstrip())
+        lines.append(f'{indent}"""')
+
     # Dataclasses for named structs
     for struct_name, st in structs.items():
         lines.append("@dataclass(frozen=True)")
@@ -157,6 +166,9 @@ def generate_python_bindings(*, schema: Schema, pkg: str, out_file: Path, opts: 
             call_args.append(arg_name)
         args_sig = ", ".join(["self", *arg_parts])
         lines.append(f"    def {fn_name}({args_sig}) -> {ret_py}:")
+        doc = schema.symbol_docs_by_pkg.get(pkg, {}).get(fn_name)
+        if doc:
+            _emit_docstring(doc, indent="        ")
         lines.append(f"        r = self._h.{fn_name}({', '.join(call_args)})")
         if results:
             lines.append(

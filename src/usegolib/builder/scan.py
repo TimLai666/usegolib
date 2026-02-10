@@ -64,6 +64,7 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
             name = item.get("name")
             params = item.get("params")
             results = item.get("results")
+            doc = item.get("doc")
             if not isinstance(pkg, str) or not isinstance(name, str):
                 continue
             if not isinstance(params, list) or not isinstance(results, list):
@@ -72,7 +73,18 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                 continue
             if not all(isinstance(t, str) for t in results):
                 continue
-            funcs.append(ExportedFunc(pkg=pkg, name=name, params=list(params), results=list(results)))
+            doc_str: str | None = None
+            if isinstance(doc, str):
+                doc_str = doc.strip() or None
+            funcs.append(
+                ExportedFunc(
+                    pkg=pkg,
+                    name=name,
+                    params=list(params),
+                    results=list(results),
+                    doc=doc_str,
+                )
+            )
 
         methods: list[ExportedMethod] = []
         for item in obj.get("methods", []):
@@ -83,6 +95,7 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
             name = item.get("name")
             params = item.get("params")
             results = item.get("results")
+            doc = item.get("doc")
             if not (isinstance(pkg, str) and isinstance(recv, str) and isinstance(name, str)):
                 continue
             if not isinstance(params, list) or not isinstance(results, list):
@@ -92,7 +105,14 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
             if not all(isinstance(t, str) for t in results):
                 continue
             methods.append(
-                ExportedMethod(pkg=pkg, recv=recv, name=name, params=list(params), results=list(results))
+                ExportedMethod(
+                    pkg=pkg,
+                    recv=recv,
+                    name=name,
+                    params=list(params),
+                    results=list(results),
+                    doc=(doc.strip() or None) if isinstance(doc, str) else None,
+                )
             )
 
         generic_funcs: list[GenericFuncDef] = []
@@ -104,6 +124,7 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
             type_params = item.get("type_params")
             params = item.get("params")
             results = item.get("results")
+            doc = item.get("doc")
             if not (isinstance(pkg, str) and isinstance(name, str)):
                 continue
             if not isinstance(type_params, list) or not all(isinstance(x, str) for x in type_params):
@@ -121,6 +142,7 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                     type_params=list(type_params),
                     params=list(params),
                     results=list(results),
+                    doc=(doc.strip() or None) if isinstance(doc, str) else None,
                 )
             )
 
@@ -227,6 +249,7 @@ type outFunc struct {
 	Name    string   `json:"name"`
 	Params  []string `json:"params"`
 	Results []string `json:"results"`
+	Doc     string   `json:"doc"`
 }
 
 type outMethod struct {
@@ -235,6 +258,7 @@ type outMethod struct {
 	Name    string   `json:"name"`
 	Params  []string `json:"params"`
 	Results []string `json:"results"`
+	Doc     string   `json:"doc"`
 }
 
 type outGenericFunc struct {
@@ -243,6 +267,7 @@ type outGenericFunc struct {
 	TypeParams []string `json:"type_params"`
 	Params     []string `json:"params"`
 	Results    []string `json:"results"`
+	Doc        string   `json:"doc"`
 }
 
 type outObj struct {
@@ -313,7 +338,7 @@ func main() {
 		structNames := map[string]bool{}
 		structFields := map[string][]outStructField{}
 		for _, file := range files {
-			af, err := parser.ParseFile(fs, file, nil, 0)
+			af, err := parser.ParseFile(fs, file, nil, parser.ParseComments)
 			if err != nil {
 				continue
 			}
@@ -355,6 +380,7 @@ func main() {
 						TypeParams: typeParams,
 						Params:     params,
 						Results:    results,
+						Doc:        docText(fd.Doc),
 					})
 					continue
 				}
@@ -372,6 +398,7 @@ func main() {
 					Name:    fd.Name.Name,
 					Params:  params,
 					Results: results,
+					Doc:     docText(fd.Doc),
 				})
 					continue
 				}
@@ -403,6 +430,7 @@ func main() {
 					Name:    fd.Name.Name,
 					Params:  params,
 					Results: results,
+					Doc:     docText(fd.Doc),
 				})
 			}
 		}
@@ -477,6 +505,13 @@ func fieldListTypes(fl *ast.FieldList, im map[string]string) []string {
 		}
 	}
 	return out
+}
+
+func docText(cg *ast.CommentGroup) string {
+	if cg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cg.Text())
 }
 
 func collectStructTypes(af *ast.File, im map[string]string, out map[string]bool, fieldsOut map[string][]outStructField) {
