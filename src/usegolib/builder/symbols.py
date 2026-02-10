@@ -59,3 +59,4 @@ class GenericInstantiation:
     symbol: str
     params: list[str]
     results: list[str]
+    doc: str | None = None

@@ -16,7 +16,7 @@ def main() -> None:
     #
     # For end-users without Go, ship a prebuilt wheel produced by `usegolib package`.
     insyra = usegolib.import_("github.com/HazelnutParadise/insyra", version="v0.2.14")
-
+    isr = usegolib.import_("github.com/HazelnutParadise/insyra")
     # --- DataList (object handle + variadic any) ---
     dl = insyra.NewDataList(1,2,3)  # Go: NewDataList() -> *DataList
     dl.Append(1, 2, 3, 4, 5)  # Go: Append(values ...any)
@@ -34,7 +34,7 @@ def main() -> None:
     print("DataTable.Data(True) ->", dt.Data(True))
     print("DataTable.Show() ->")
     dt.Show()
-    dt.ToCSV("output.csv", True, False, False)
+    dt.ToCSV("output.csv", False, False, False)
 
 if __name__ == "__main__":
     main()

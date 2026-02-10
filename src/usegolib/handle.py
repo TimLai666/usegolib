@@ -71,6 +71,36 @@ def _pack_variadic_args(*, params: list[str], args: list[Any]) -> list[Any]:
     return [*args[:fixed], tail]
 
 
+def _format_go_sig(*, pkg: str, name: str, params: list[str], results: list[str], recv: str | None = None) -> str:
+    if recv is None:
+        head = f"{pkg}.{name}"
+    else:
+        head = f"(*{recv}).{name}"
+    p = ", ".join(params)
+    if not results:
+        r = ""
+    elif len(results) == 1:
+        r = results[0]
+    else:
+        r = ", ".join(results)
+        r = f"({r})"
+    return f"Go: {head}({p}){(' ' + r) if r else ''}"
+
+
+def _attach_doc(*, fn: Callable[..., Any], doc: str | None, sig: str | None) -> None:
+    """Best-effort attach __doc__ to a dynamic callable."""
+    doc = (doc or "").strip()
+    sig = (sig or "").strip()
+    if doc and sig:
+        fn.__doc__ = f"{doc}\n\n{sig}"
+        return
+    if doc:
+        fn.__doc__ = doc
+        return
+    if sig:
+        fn.__doc__ = sig
+
+
 def _opaque_ptr_target(*, schema: Schema, pkg: str, go_type: str) -> str | None:
     """If go_type is `*T` for an opaque struct T, return `T` else None.
 
@@ -194,9 +224,12 @@ class PackageHandle:
 
         if self._schema is not None:
             doc = self._schema.symbol_docs_by_pkg.get(self.package, {}).get(name)
-            if doc:
-                # Best-effort: attach GoDoc to the dynamic callable.
-                _call.__doc__ = doc
+            sig = self._schema.symbols_by_pkg.get(self.package, {}).get(name)
+            sig_txt = None
+            if sig is not None:
+                params, results = sig
+                sig_txt = _format_go_sig(pkg=self.package, name=name, params=params, results=results)
+            _attach_doc(fn=_call, doc=doc, sig=sig_txt)
 
         return _call
 
@@ -325,6 +358,8 @@ class TypedPackageHandle:
 
             return decode_value(types=self._types, go_type=results[0], v=result)
 
+        # Preserve docstrings from the base callable (GoDoc/signature).
+        _call.__doc__ = getattr(fn, "__doc__", None)
         return _call
 
     def object(self, type_name: str, init: Any | None = None) -> "TypedGoObject":
@@ -353,6 +388,7 @@ class TypedPackageHandle:
 
             return decode_value(types=self._types, go_type=results[0], v=result)
 
+        _call.__doc__ = getattr(fn, "__doc__", None)
         return _call
 
 
@@ -480,8 +516,18 @@ class GoObject:
                 .get(self._type, {})
                 .get(name)
             )
-            if doc:
-                _call.__doc__ = doc
+            sig = (
+                schema.methods_by_pkg.get(self._pkg.package, {})
+                .get(self._type, {})
+                .get(name)
+            )
+            sig_txt = None
+            if sig is not None:
+                params, results = sig
+                sig_txt = _format_go_sig(
+                    pkg=self._pkg.package, recv=self._type, name=name, params=params, results=results
+                )
+            _attach_doc(fn=_call, doc=doc, sig=sig_txt)
 
         return _call
 
@@ -525,4 +571,5 @@ class TypedGoObject:
 
             return decode_value(types=self._types, go_type=results[0], v=result)
 
+        _call.__doc__ = getattr(fn, "__doc__", None)
         return _call

@@ -245,6 +245,7 @@ def _load_generic_instantiations(
             symbol=symbol,
             params=inst_params,
             results=inst_results,
+            doc=d.doc,
         )
         if not _is_supported_sig(
             ExportedFunc(pkg=pkg, name=symbol, params=inst_params, results=inst_results),
@@ -496,6 +497,7 @@ def build_artifact(
                         "name": gi.symbol,
                         "params": gi.params,
                         "results": gi.results,
+                        "doc": gi.doc,
                         "generic": {"name": gi.generic_name, "type_args": gi.type_args},
                     }
                     for gi in generic_insts
