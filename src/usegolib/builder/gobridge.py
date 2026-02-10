@@ -432,8 +432,17 @@ def _write_wrapper(
         lines.append(f"    {call}")
         lines.append("    return nil, nil")
     elif len(fn.results) == 1:
-        lines.append(f"    r0 := {call}")
         t0 = fn.results[0].strip()
+        if t0 == "error":
+            lines.append(f"    err := {call}")
+            lines.append("    if err != nil {")
+            lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+            lines.append("    }")
+            lines.append("    return nil, nil")
+            lines.append("}")
+            return lines
+
+        lines.append(f"    r0 := {call}")
         opaque_ptr = None
         if t0.startswith("*"):
             inner = t0[1:].strip()
@@ -537,8 +546,17 @@ def _write_method_wrapper(
         lines.append(f"    {call}")
         lines.append("    return nil, nil")
     elif len(m.results) == 1:
-        lines.append(f"    r0 := {call}")
         t0 = m.results[0].strip()
+        if t0 == "error":
+            lines.append(f"    err := {call}")
+            lines.append("    if err != nil {")
+            lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+            lines.append("    }")
+            lines.append("    return nil, nil")
+            lines.append("}")
+            return lines
+
+        lines.append(f"    r0 := {call}")
         opaque_ptr = None
         if t0.startswith("*"):
             inner = t0[1:].strip()
@@ -639,8 +657,17 @@ def _write_generic_wrapper(
         lines.append(f"    {call}")
         lines.append("    return nil, nil")
     elif len(gi.results) == 1:
-        lines.append(f"    r0 := {call}")
         t0 = gi.results[0].strip()
+        if t0 == "error":
+            lines.append(f"    err := {call}")
+            lines.append("    if err != nil {")
+            lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+            lines.append("    }")
+            lines.append("    return nil, nil")
+            lines.append("}")
+            return lines
+
+        lines.append(f"    r0 := {call}")
         opaque_ptr = None
         if t0.startswith("*"):
             inner = t0[1:].strip()

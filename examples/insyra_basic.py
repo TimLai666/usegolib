@@ -18,19 +18,23 @@ def main() -> None:
     insyra = usegolib.import_("github.com/HazelnutParadise/insyra", version="v0.2.14")
 
     # --- DataList (object handle + variadic any) ---
-    dl = insyra.object("DataList")
+    dl = insyra.NewDataList(1,2,3)  # Go: NewDataList() -> *DataList
     dl.Append(1, 2, 3, 4, 5)  # Go: Append(values ...any)
     print("DataList.Sum() ->", dl.Sum())
     print("DataList.Mean() ->", dl.Mean())
     print("DataList.Data() ->", dl.Data())
-
+    print("DataList.Show() ->")
+    dl.Show()
+    
     # --- DataTable (variadic map[string]any + variadic bool) ---
-    dt = insyra.object("DataTable")
+    dt = insyra.NewDataTable()
     dt.AppendRowsByColIndex({"A": 1, "B": 2}, {"A": 3, "B": 4})
     print("DataTable.NumRows() ->", dt.NumRows())
     print("DataTable.NumCols() ->", dt.NumCols())
     print("DataTable.Data(True) ->", dt.Data(True))
-
+    print("DataTable.Show() ->")
+    dt.Show()
+    dt.ToCSV("output.csv", True, False, False)
 
 if __name__ == "__main__":
     main()

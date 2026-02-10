@@ -161,6 +161,13 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    return \"\", errors.New(msg)",
                 "}",
                 "",
+                "func FailOnly(msg string) error {",
+                "    if msg == \"\" {",
+                "        return nil",
+                "    }",
+                "    return errors.New(msg)",
+                "}",
+                "",
             ]
         ),
         encoding="utf-8",
@@ -279,6 +286,11 @@ def test_build_and_call(tmp_path: Path):
 
     with pytest.raises(usegolib.errors.GoError):
         h.Fail("boom")
+
+    # `error`-only results return nil on success and GoError on failure.
+    assert h.FailOnly("") is None
+    with pytest.raises(usegolib.errors.GoError):
+        h.FailOnly("boom")
 
     # Typed wrapper: decode record-struct results into dataclasses and accept dataclasses as inputs.
     ht = h.typed()

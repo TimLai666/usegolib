@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from usegolib.errors import UnsupportedTypeError
-from usegolib.schema import Schema, validate_call_args, validate_call_result, validate_method_result
+from usegolib.schema import (
+    Schema,
+    validate_call_args,
+    validate_call_result,
+    validate_method_result,
+)
 
 
 def test_schema_validation_rejects_missing_required_fields():
@@ -44,3 +49,14 @@ def test_schema_allows_opaque_pointer_handles_as_int_ids():
 
     validate_call_result(schema=schema, pkg="example.com/p", fn="NewOpaque", result=1)
     validate_method_result(schema=schema, pkg="example.com/p", recv="Opaque", method="Self", result=2)
+
+
+def test_schema_error_only_result_is_nil():
+    schema = Schema.from_manifest(
+        {
+            "structs": {"example.com/p": {}},
+            "symbols": [{"pkg": "example.com/p", "name": "Do", "params": [], "results": ["error"]}],
+        }
+    )
+
+    validate_call_result(schema=schema, pkg="example.com/p", fn="Do", result=None)

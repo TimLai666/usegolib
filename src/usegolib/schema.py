@@ -297,6 +297,12 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
 
     if t == "any":
         return
+    if t == "error":
+        # For v0 we represent successful `error` results as nil. Non-nil errors
+        # are reported via the ABI error envelope instead of as values.
+        if v is not None:
+            raise UnsupportedTypeError("expected nil")
+        return
 
     # Special-case `[]byte`: represented as bytes, not list[int].
     if t == "[]byte":
