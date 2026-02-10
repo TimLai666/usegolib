@@ -23,6 +23,7 @@ from .errors import (
 from .runtime.cbridge import SharedLibClient
 from .schema import (
     Schema,
+    success_result_types,
     validate_call_args,
     validate_call_result,
     validate_method_args,
@@ -86,6 +87,43 @@ def _pack_variadic_args(*, params: list[str], args: list[Any]) -> list[Any]:
 
     tail = list(args[fixed:])
     return [*args[:fixed], tail]
+
+
+def _decode_success_result(
+    *,
+    schema: Schema,
+    pkg: str,
+    results: list[str],
+    raw: Any,
+    pkg_handle: "PackageHandle",
+) -> Any:
+    """Decode a successful ABI result according to the schema signature."""
+    value_results = success_result_types(results)
+    if not value_results:
+        return raw
+
+    def _one(go_type: str, v: Any) -> Any:
+        type_name = _opaque_ptr_target(schema=schema, pkg=pkg, go_type=go_type)
+        if type_name is None:
+            return v
+        if v is None:
+            return None
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise ABIDecodeError(f"expected integer object id for opaque pointer result {go_type}")
+        return GoObject(_pkg=pkg_handle, _type=type_name, _id=v)
+
+    if len(value_results) == 1:
+        return _one(value_results[0], raw)
+
+    if not isinstance(raw, (list, tuple)):
+        raise ABIDecodeError(
+            f"expected {len(value_results)} results as a list for signature results={results!r}"
+        )
+    if len(raw) != len(value_results):
+        raise ABIDecodeError(
+            f"wrong result arity (expected {len(value_results)}, got {len(raw)}) for signature results={results!r}"
+        )
+    return tuple(_one(t, v) for t, v in zip(value_results, raw, strict=True))
 
 
 def _format_go_sig(*, pkg: str, name: str, params: list[str], results: list[str], recv: str | None = None) -> str:
@@ -215,14 +253,13 @@ class PackageHandle:
         # Treat any missing attribute as a Go function call.
         def _call(*args: Any) -> Any:
             args_list = list(args)
-            result_go_type: str | None = None
+            sig_results: list[str] | None = None
             if self._schema is not None:
                 sig = self._schema.symbols_by_pkg.get(self.package, {}).get(name)
                 if sig is not None:
                     params, _results = sig
                     args_list = _pack_variadic_args(params=params, args=args_list)
-                    if _results:
-                        result_go_type = _results[0]
+                    sig_results = _results
 
                 # Allow passing generated dataclasses; encode them to record-struct dicts first.
                 from .typed import encode_value
@@ -246,16 +283,14 @@ class PackageHandle:
                         fn=name,
                         result=resp.result,
                     )
-                    if result_go_type is not None:
-                        type_name = _opaque_ptr_target(
-                            schema=self._schema, pkg=self.package, go_type=result_go_type
+                    if sig_results is not None:
+                        return _decode_success_result(
+                            schema=self._schema,
+                            pkg=self.package,
+                            results=sig_results,
+                            raw=resp.result,
+                            pkg_handle=self,
                         )
-                        if type_name is not None:
-                            if not isinstance(resp.result, int) or isinstance(resp.result, bool):
-                                raise ABIDecodeError(
-                                    f"expected integer object id for opaque pointer result {result_go_type}"
-                                )
-                            return GoObject(_pkg=self, _type=type_name, _id=resp.result)
                 return resp.result
 
             err = resp.error
@@ -403,11 +438,19 @@ class TypedPackageHandle:
             if sig is None:
                 return result
             _params, results = sig
-            if not results:
+            value_results = success_result_types(results)
+            if not value_results:
                 return result
             from .typed import decode_value
 
-            return decode_value(types=self._types, go_type=results[0], v=result)
+            if len(value_results) == 1:
+                return decode_value(types=self._types, go_type=value_results[0], v=result)
+            if not isinstance(result, (list, tuple)):
+                return result
+            return tuple(
+                decode_value(types=self._types, go_type=t, v=v)
+                for t, v in zip(value_results, result, strict=True)
+            )
 
         # Preserve docstrings from the base callable (GoDoc/signature).
         _call.__doc__ = getattr(fn, "__doc__", None)
@@ -433,11 +476,19 @@ class TypedPackageHandle:
             if sig is None:
                 return result
             _params, results = sig
-            if not results:
+            value_results = success_result_types(results)
+            if not value_results:
                 return result
             from .typed import decode_value
 
-            return decode_value(types=self._types, go_type=results[0], v=result)
+            if len(value_results) == 1:
+                return decode_value(types=self._types, go_type=value_results[0], v=result)
+            if not isinstance(result, (list, tuple)):
+                return result
+            return tuple(
+                decode_value(types=self._types, go_type=t, v=v)
+                for t, v in zip(value_results, result, strict=True)
+            )
 
         _call.__doc__ = getattr(fn, "__doc__", None)
         return _call
@@ -490,7 +541,7 @@ class GoObject:
                 raise UseGoLibError("object is closed")
             args_list = list(args)
             schema = self._pkg._schema  # noqa: SLF001 - internal linkage
-            result_go_type: str | None = None
+            sig_results: list[str] | None = None
             if schema is not None:
                 sig = (
                     schema.methods_by_pkg.get(self._pkg.package, {})
@@ -500,8 +551,7 @@ class GoObject:
                 if sig is not None:
                     params, _results = sig
                     args_list = _pack_variadic_args(params=params, args=args_list)
-                    if _results:
-                        result_go_type = _results[0]
+                    sig_results = _results
 
                 from .typed import encode_value
 
@@ -535,16 +585,14 @@ class GoObject:
                         method=name,
                         result=resp.result,
                     )
-                    if result_go_type is not None:
-                        type_name = _opaque_ptr_target(
-                            schema=schema, pkg=self._pkg.package, go_type=result_go_type
+                    if sig_results is not None:
+                        return _decode_success_result(
+                            schema=schema,
+                            pkg=self._pkg.package,
+                            results=sig_results,
+                            raw=resp.result,
+                            pkg_handle=self._pkg,
                         )
-                        if type_name is not None:
-                            if not isinstance(resp.result, int) or isinstance(resp.result, bool):
-                                raise ABIDecodeError(
-                                    f"expected integer object id for opaque pointer result {result_go_type}"
-                                )
-                            return GoObject(_pkg=self._pkg, _type=type_name, _id=resp.result)
                 return resp.result
 
             err = resp.error
@@ -616,11 +664,19 @@ class TypedGoObject:
             if sig is None:
                 return result
             _params, results = sig
-            if not results:
+            value_results = success_result_types(results)
+            if not value_results:
                 return result
             from .typed import decode_value
 
-            return decode_value(types=self._types, go_type=results[0], v=result)
+            if len(value_results) == 1:
+                return decode_value(types=self._types, go_type=value_results[0], v=result)
+            if not isinstance(result, (list, tuple)):
+                return result
+            return tuple(
+                decode_value(types=self._types, go_type=t, v=v)
+                for t, v in zip(value_results, result, strict=True)
+            )
 
         _call.__doc__ = getattr(fn, "__doc__", None)
         return _call

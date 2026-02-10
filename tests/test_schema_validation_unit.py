@@ -60,3 +60,24 @@ def test_schema_error_only_result_is_nil():
     )
 
     validate_call_result(schema=schema, pkg="example.com/p", fn="Do", result=None)
+
+
+def test_schema_multi_return_values_are_lists():
+    schema = Schema.from_manifest(
+        {
+            "structs": {"example.com/p": {}},
+            "symbols": [
+                {"pkg": "example.com/p", "name": "Pair", "params": [], "results": ["int64", "string"]},
+                {"pkg": "example.com/p", "name": "PairErr", "params": [], "results": ["int64", "string", "error"]},
+                # Back-compat: (T, error) returns a single T on success.
+                {"pkg": "example.com/p", "name": "SingleErr", "params": [], "results": ["int64", "error"]},
+            ],
+        }
+    )
+
+    validate_call_result(schema=schema, pkg="example.com/p", fn="Pair", result=[1, "ok"])
+    validate_call_result(schema=schema, pkg="example.com/p", fn="PairErr", result=[2, "ok2"])
+    validate_call_result(schema=schema, pkg="example.com/p", fn="SingleErr", result=3)
+
+    with pytest.raises(UnsupportedTypeError, match=r"wrong result arity"):
+        validate_call_result(schema=schema, pkg="example.com/p", fn="Pair", result=[1])

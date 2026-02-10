@@ -16,6 +16,31 @@ _INT_RANGES = {
 }
 
 
+def success_result_types(results: list[str]) -> list[str]:
+    """Return the value-result types for a successful call.
+
+    The ABI encodes non-nil errors in the error envelope rather than as returned
+    values. For signatures that end with `error`, the `error` is omitted from
+    successful results.
+
+    Conventions:
+    - `() error` => successful result is `nil` (no value).
+    - `(T, error)` => successful result is a single `T` (back-compat).
+    - `(T1, T2, ..., error)` => successful result is a list `[T1, T2, ...]`.
+    - `(T1, T2, ...)` => successful result is a list `[T1, T2, ...]`.
+    """
+    rs = [r.strip() for r in results]
+    if not rs:
+        return []
+    if rs == ["error"]:
+        return []
+    if rs[-1] == "error":
+        if len(rs) == 2:
+            return [rs[0]]
+        return rs[:-1]
+    return rs
+
+
 def _split_prefix(t: str) -> tuple[str, str]:
     t = t.strip()
     if t.startswith("*"):
@@ -273,16 +298,32 @@ def validate_call_result(*, schema: Schema, pkg: str, fn: str, result: Any) -> N
     if sig is None:
         return
     _params, results = sig
-    if not results:
+    value_results = success_result_types(results)
+    if not value_results:
         if result is not None:
             raise UnsupportedTypeError("schema: expected nil result")
         return
-    # (T, error) is represented as a single successful result in the ABI.
-    t0 = results[0]
-    try:
-        _validate_value(schema=schema, pkg=pkg, t=t0, v=result)
-    except UnsupportedTypeError as e:
-        raise UnsupportedTypeError(f"schema: result ({t0}): {e}") from None
+    if len(value_results) == 1:
+        t0 = value_results[0]
+        try:
+            _validate_value(schema=schema, pkg=pkg, t=t0, v=result)
+        except UnsupportedTypeError as e:
+            raise UnsupportedTypeError(f"schema: result ({t0}): {e}") from None
+        return
+
+    if not isinstance(result, list):
+        raise UnsupportedTypeError(
+            f"schema: expected multiple results (len={len(value_results)}) as a list"
+        )
+    if len(result) != len(value_results):
+        raise UnsupportedTypeError(
+            f"schema: wrong result arity (expected {len(value_results)}, got {len(result)})"
+        )
+    for i, (t, v) in enumerate(zip(value_results, result, strict=True)):
+        try:
+            _validate_value(schema=schema, pkg=pkg, t=t, v=v)
+        except UnsupportedTypeError as e:
+            raise UnsupportedTypeError(f"schema: result{i} ({t}): {e}") from None
 
 
 def validate_method_args(
@@ -308,15 +349,32 @@ def validate_method_result(
     if sig is None:
         return
     _params, results = sig
-    if not results:
+    value_results = success_result_types(results)
+    if not value_results:
         if result is not None:
             raise UnsupportedTypeError("schema: expected nil result")
         return
-    t0 = results[0]
-    try:
-        _validate_value(schema=schema, pkg=pkg, t=t0, v=result)
-    except UnsupportedTypeError as e:
-        raise UnsupportedTypeError(f"schema: result ({t0}): {e}") from None
+    if len(value_results) == 1:
+        t0 = value_results[0]
+        try:
+            _validate_value(schema=schema, pkg=pkg, t=t0, v=result)
+        except UnsupportedTypeError as e:
+            raise UnsupportedTypeError(f"schema: result ({t0}): {e}") from None
+        return
+
+    if not isinstance(result, list):
+        raise UnsupportedTypeError(
+            f"schema: expected multiple results (len={len(value_results)}) as a list"
+        )
+    if len(result) != len(value_results):
+        raise UnsupportedTypeError(
+            f"schema: wrong result arity (expected {len(value_results)}, got {len(result)})"
+        )
+    for i, (t, v) in enumerate(zip(value_results, result, strict=True)):
+        try:
+            _validate_value(schema=schema, pkg=pkg, t=t, v=v)
+        except UnsupportedTypeError as e:
+            raise UnsupportedTypeError(f"schema: result{i} ({t}): {e}") from None
 
 
 def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:

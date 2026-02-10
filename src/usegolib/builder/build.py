@@ -184,11 +184,13 @@ def _is_supported_type(t: str, *, struct_types: set[str] | None = None) -> bool:
 def _is_supported_sig(fn: ExportedFunc, *, struct_types: set[str] | None = None) -> bool:
     if any(not _is_supported_type(t, struct_types=struct_types) for t in fn.params):
         return False
-    if any(not _is_supported_type(t, struct_types=struct_types) and t != "error" for t in fn.results):
+    if any(not _is_supported_type(t, struct_types=struct_types) and t.strip() != "error" for t in fn.results):
         return False
-    if len(fn.results) > 2:
+    errs = [i for i, t in enumerate(fn.results) if t.strip() == "error"]
+    if len(errs) > 1:
         return False
-    if len(fn.results) == 2 and fn.results[1] != "error":
+    if errs and errs[0] != len(fn.results) - 1:
+        # Only support trailing error (Go convention).
         return False
     return True
 
@@ -196,11 +198,12 @@ def _is_supported_sig(fn: ExportedFunc, *, struct_types: set[str] | None = None)
 def _is_supported_method_sig(m: ExportedMethod, *, struct_types: set[str] | None = None) -> bool:
     if any(not _is_supported_type(t, struct_types=struct_types) for t in m.params):
         return False
-    if any(not _is_supported_type(t, struct_types=struct_types) and t != "error" for t in m.results):
+    if any(not _is_supported_type(t, struct_types=struct_types) and t.strip() != "error" for t in m.results):
         return False
-    if len(m.results) > 2:
+    errs = [i for i, t in enumerate(m.results) if t.strip() == "error"]
+    if len(errs) > 1:
         return False
-    if len(m.results) == 2 and m.results[1] != "error":
+    if errs and errs[0] != len(m.results) - 1:
         return False
     return True
 
