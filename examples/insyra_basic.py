@@ -17,6 +17,7 @@ def main() -> None:
     # For end-users without Go, ship a prebuilt wheel produced by `usegolib package`.
     insyra = usegolib.import_("github.com/HazelnutParadise/insyra", version="v0.2.14")
     isr = usegolib.import_("github.com/HazelnutParadise/insyra/isr")
+    
     # --- DataList (object handle + variadic any) ---
     dl = isr.DL.Of(1,2,3)  # Go: NewDataList(values ...any) -> *DataList
     dl.Append(1, 2, 3, 4, 5)  # Go: Append(values ...any)
