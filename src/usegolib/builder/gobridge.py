@@ -410,13 +410,18 @@ def _write_wrapper(
             )
         )
 
-    call = f"{alias}.{fn.name}({', '.join(arg_names)})"
+    call_args = list(arg_names)
+    if fn.params and fn.params[-1].strip().startswith("..."):
+        call_args[-1] = call_args[-1] + "..."
+    call = f"{alias}.{fn.name}({', '.join(call_args)})"
     if len(fn.results) == 0:
         lines.append(f"    {call}")
         lines.append("    return nil, nil")
     elif len(fn.results) == 1:
         lines.append(f"    r0 := {call}")
-        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
+        if _base_type(fn.results[0]) == "any" or _base_type(fn.results[0]) in struct_types or _base_type(
+            fn.results[0]
+        ) in {
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -487,13 +492,18 @@ def _write_method_wrapper(
             )
         )
 
-    call = f"recv.{m.name}({', '.join(arg_names)})"
+    call_args = list(arg_names)
+    if m.params and m.params[-1].strip().startswith("..."):
+        call_args[-1] = call_args[-1] + "..."
+    call = f"recv.{m.name}({', '.join(call_args)})"
     if len(m.results) == 0:
         lines.append(f"    {call}")
         lines.append("    return nil, nil")
     elif len(m.results) == 1:
         lines.append(f"    r0 := {call}")
-        if _base_type(m.results[0]) in struct_types or _base_type(m.results[0]) in {
+        if _base_type(m.results[0]) == "any" or _base_type(m.results[0]) in struct_types or _base_type(
+            m.results[0]
+        ) in {
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -561,13 +571,18 @@ def _write_generic_wrapper(
     type_args_exprs = [
         _qualify_type(t, pkg_alias=alias, struct_types=struct_types) for t in gi.type_args
     ]
-    call = f"{alias}.{gi.generic_name}[{', '.join(type_args_exprs)}]({', '.join(arg_names)})"
+    call_args = list(arg_names)
+    if gi.params and gi.params[-1].strip().startswith("..."):
+        call_args[-1] = call_args[-1] + "..."
+    call = f"{alias}.{gi.generic_name}[{', '.join(type_args_exprs)}]({', '.join(call_args)})"
     if len(gi.results) == 0:
         lines.append(f"    {call}")
         lines.append("    return nil, nil")
     elif len(gi.results) == 1:
         lines.append(f"    r0 := {call}")
-        if _base_type(gi.results[0]) in struct_types or _base_type(gi.results[0]) in {
+        if _base_type(gi.results[0]) == "any" or _base_type(gi.results[0]) in struct_types or _base_type(
+            gi.results[0]
+        ) in {
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -611,6 +626,10 @@ def _conv_expr(go_type: str, v: str) -> str:
 def _base_type(go_type: str) -> str:
     t = go_type.strip()
     while True:
+        # Variadic `...T` behaves like a slice `[]T` inside the wrapper.
+        if t.startswith("..."):
+            t = t[3:].strip()
+            continue
         if t.startswith("*"):
             t = t[1:].strip()
             continue
@@ -627,6 +646,9 @@ def _qualify_type(go_type: str, *, pkg_alias: str, struct_types: set[str]) -> st
     t = go_type.strip()
     if t.startswith("*"):
         return "*" + _qualify_type(t[1:], pkg_alias=pkg_alias, struct_types=struct_types)
+    if t.startswith("..."):
+        # Variadic `...T` is a slice type `[]T` when referenced as a value type.
+        return "[]" + _qualify_type(t[3:], pkg_alias=pkg_alias, struct_types=struct_types)
     if t.startswith("[]"):
         return "[]" + _qualify_type(t[2:], pkg_alias=pkg_alias, struct_types=struct_types)
     if t.startswith("map[string]"):
@@ -654,6 +676,14 @@ def _write_arg_convert(
         lines.append(
             '    return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}'
         )
+
+    # Normalize variadics: `...T` is received over ABI as a single slice arg.
+    if go_type.strip().startswith("..."):
+        go_type = "[]" + go_type.strip()[3:].strip()
+
+    if go_type == "any":
+        lines.append(f"    {var_name} := {value_expr}")
+        return lines
 
     if _base_type(go_type) in struct_types:
         typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
@@ -690,6 +720,13 @@ def _write_arg_convert(
     if go_type.startswith("map[string]"):
         vt = go_type[len("map[string]") :]
         tmp = f"t_{var_name}"
+
+        if vt == "any":
+            lines.append(f"    {var_name}, ok := toAnyMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
 
         if vt == "int64":
             lines.append(f"    {var_name}, ok := toStringInt64Map({value_expr})")
@@ -840,6 +877,31 @@ def _write_arg_convert(
         lines.append(f"    {var_name}, ok := toBytes({value_expr})")
         lines.append("    if !ok {")
         unsupported()
+        lines.append("    }")
+        return lines
+
+    if go_type == "[]any":
+        lines.append(f"    {var_name}, ok := toAnySlice({value_expr})")
+        lines.append("    if !ok {")
+        unsupported()
+        lines.append("    }")
+        return lines
+
+    if go_type == "[]map[string]any":
+        tmp = f"t_{var_name}"
+        lines.append(f"    {tmp}, ok := toAnySlice({value_expr})")
+        lines.append("    if !ok {")
+        unsupported()
+        lines.append("    }")
+        lines.append(f"    {var_name} := make([]map[string]any, 0, len({tmp}))")
+        lines.append(f"    for _, item := range {tmp} {{")
+        lines.append("        m, ok := toAnyMap(item)")
+        lines.append("        if !ok {")
+        lines.append(
+            '            return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}'
+        )
+        lines.append("        }")
+        lines.append(f"        {var_name} = append({var_name}, m)")
         lines.append("    }")
         return lines
 
@@ -1554,6 +1616,12 @@ def _write_helpers(
             "",
             "func exportAny(v reflect.Value) (any, bool) {",
             "    if v.Kind() == reflect.Ptr {",
+            "        if v.IsNil() {",
+            "            return nil, true",
+            "        }",
+            "        v = v.Elem()",
+            "    }",
+            "    if v.Kind() == reflect.Interface {",
             "        if v.IsNil() {",
             "            return nil, true",
             "        }",

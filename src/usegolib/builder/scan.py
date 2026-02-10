@@ -641,6 +641,12 @@ func renderType(e ast.Expr, im map[string]string) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		return t.Name
+	case *ast.Ellipsis:
+		inner := renderType(t.Elt, im)
+		if inner == "" {
+			return ""
+		}
+		return "..." + inner
 	case *ast.ArrayType:
 		if t.Len != nil {
 			return ""

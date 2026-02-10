@@ -38,7 +38,7 @@ def _py_type_for_go(schema: Schema, pkg: str, go_type: str) -> Any:
     for op in reversed(ops):
         if op == "*":
             ty = Optional[ty]
-        elif op == "[]":
+        elif op in {"[]", "..."}:
             ty = list[ty]  # type: ignore[valid-type]
         elif op == "map[string]":
             ty = dict[str, ty]  # type: ignore[valid-type]
@@ -153,8 +153,8 @@ def decode_value(*, types: PackageTypes, go_type: str, v: Any) -> Any:
         if v is None:
             return None
         return decode_value(types=types, go_type=go_type[1:].strip(), v=v)
-    if ops and ops[0] == "[]":
-        inner = go_type[2:].strip()
+    if ops and ops[0] in {"[]", "..."}:
+        inner = go_type[2:].strip() if ops[0] == "[]" else go_type[3:].strip()
         if not isinstance(v, list):
             return v
         return [decode_value(types=types, go_type=inner, v=item) for item in v]

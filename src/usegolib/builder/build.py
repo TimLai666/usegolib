@@ -66,6 +66,8 @@ def _is_supported_type(t: str, *, struct_types: set[str] | None = None) -> bool:
         "float32",
         "float64",
     }
+    if t == "any":
+        return True
     if t in scalars:
         return True
     if t == "time.Time":
@@ -79,6 +81,8 @@ def _is_supported_type(t: str, *, struct_types: set[str] | None = None) -> bool:
     if t.startswith("[]"):
         # []byte is handled above as a special scalar.
         return _is_supported_type(t[2:], struct_types=struct_types)
+    if t.startswith("..."):
+        return _is_supported_type("[]" + t[3:], struct_types=struct_types)
     if t.startswith("map[string]"):
         vt = t[len("map[string]") :]
         return _is_supported_type(vt, struct_types=struct_types)

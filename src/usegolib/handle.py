@@ -43,6 +43,34 @@ class _Runtime:
 _LOADED_RUNTIMES: dict[str, _Runtime] = {}
 
 
+def _pack_variadic_args(*, params: list[str], args: list[Any]) -> list[Any]:
+    """Pack Python varargs for Go variadic parameters.
+
+    Go variadics are represented in the ABI as a single final argument: a list of
+    elements. This enables `f(1, 2, 3)` in Python to map to `f(...T)` in Go.
+    """
+    if not params:
+        return args
+    if not params[-1].strip().startswith("..."):
+        return args
+
+    fixed = len(params) - 1
+    if len(args) < fixed:
+        # Missing required fixed args; let schema validation raise a good error.
+        return args
+
+    if len(args) == fixed:
+        # No variadic args provided.
+        return [*args, []]
+
+    # If the caller already provided the packed variadic list, don't repack.
+    if len(args) == len(params) and isinstance(args[-1], (list, tuple)):
+        return args
+
+    tail = list(args[fixed:])
+    return [*args[:fixed], tail]
+
+
 @dataclass
 class PackageHandle:
     module: str
@@ -86,6 +114,11 @@ class PackageHandle:
         def _call(*args: Any) -> Any:
             args_list = list(args)
             if self._schema is not None:
+                sig = self._schema.symbols_by_pkg.get(self.package, {}).get(name)
+                if sig is not None:
+                    params, _results = sig
+                    args_list = _pack_variadic_args(params=params, args=args_list)
+
                 # Allow passing generated dataclasses; encode them to record-struct dicts first.
                 from .typed import encode_value
 
@@ -331,6 +364,15 @@ class GoObject:
             args_list = list(args)
             schema = self._pkg._schema  # noqa: SLF001 - internal linkage
             if schema is not None:
+                sig = (
+                    schema.methods_by_pkg.get(self._pkg.package, {})
+                    .get(self._type, {})
+                    .get(name)
+                )
+                if sig is not None:
+                    params, _results = sig
+                    args_list = _pack_variadic_args(params=params, args=args_list)
+
                 from .typed import encode_value
 
                 args_list = [encode_value(schema=schema, pkg=self._pkg.package, v=a) for a in args_list]

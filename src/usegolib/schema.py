@@ -20,6 +20,8 @@ def _split_prefix(t: str) -> tuple[str, str]:
     t = t.strip()
     if t.startswith("*"):
         return "*", t[1:].strip()
+    if t.startswith("..."):
+        return "...", t[3:].strip()
     if t.startswith("[]"):
         return "[]", t[2:].strip()
     if t.startswith("map[string]"):
@@ -271,6 +273,9 @@ def validate_method_result(
 def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
     t = t.strip()
 
+    if t == "any":
+        return
+
     # Special-case `[]byte`: represented as bytes, not list[int].
     if t == "[]byte":
         if not isinstance(v, (bytes, bytearray)):
@@ -296,6 +301,14 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
         if v is None:
             return
         _validate_value(schema=schema, pkg=pkg, t=t[1:].strip(), v=v)
+        return
+
+    if t.startswith("..."):
+        if not isinstance(v, (list, tuple)):
+            raise UnsupportedTypeError("expected list")
+        inner = t[3:].strip()
+        for item in v:
+            _validate_value(schema=schema, pkg=pkg, t=inner, v=item)
         return
 
     if t.startswith("[]"):

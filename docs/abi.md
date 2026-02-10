@@ -131,6 +131,9 @@ Supported values crossing the ABI:
   - `string`
   - `bytes`
   - slices/lists of supported values (including lists of bytes)
+- `any`:
+  - `any` is represented on the wire as a plain MessagePack value (no extra envelope)
+  - `[]any` and `map[string]any` are supported recursively
 - Level 2:
   - `map[string]T` where `T` is a Level 1 scalar or a slice of Level 1 scalars
   - Encoded as a MessagePack map from string keys to values
@@ -139,6 +142,19 @@ Supported values crossing the ABI:
   - Field values are limited to Level 1/2 and record structs recursively
 
 Unsupported values MUST fail with `UnsupportedTypeError`.
+
+### Variadic Parameters (`...T`)
+
+Go variadic parameters (`...T`) are represented in the ABI as a single final argument whose value is a list.
+
+Examples:
+- Go: `Append(values ...any)`
+  - Python: `obj.Append(1, 2, 3)` sends `args = [[1, 2, 3]]`
+  - Python: `obj.Append()` sends `args = [[]]`
+- Go: `Data(useNamesAsKeys ...bool)`
+  - Python: `dt.Data(True)` sends `args = [[True]]`
+
+When manifest schema is present, the Python runtime packs varargs automatically.
 
 ### Canonical Keys (Tags)
 
