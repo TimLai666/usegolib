@@ -20,19 +20,19 @@ usegolib build --module path/to/go/module --out out/artifacts
 Build from a remote Go module (downloads via `go mod download`):
 
 ```bash
-usegolib build --module github.com/HazelnutParadise/insyra --version v0.2.14 --out out/artifacts
+usegolib build --module github.com/HazelnutParadise/insyra@v0.2.14 --out out/artifacts
 ```
 
 Force rebuild:
 
 ```bash
-usegolib build --module github.com/HazelnutParadise/insyra --version v0.2.14 --out out/artifacts --force
+usegolib build --module github.com/HazelnutParadise/insyra@v0.2.14 --out out/artifacts --force
 ```
 
 Re-download modules before rebuilding (implies `--force`):
 
 ```bash
-usegolib build --module github.com/HazelnutParadise/insyra --version v0.2.14 --out out/artifacts --redownload
+usegolib build --module github.com/HazelnutParadise/insyra@v0.2.14 --out out/artifacts --redownload
 ```
 
 Notes:
@@ -48,13 +48,13 @@ Artifacts are stored in an artifact root directory. By default this is:
 Delete an artifact (dry-run first):
 
 ```bash
-usegolib artifact rm --module github.com/HazelnutParadise/insyra --version v0.2.14
+usegolib artifact rm --module github.com/HazelnutParadise/insyra@v0.2.14
 ```
 
 Actually delete:
 
 ```bash
-usegolib artifact rm --module github.com/HazelnutParadise/insyra --version v0.2.14 --yes
+usegolib artifact rm --module github.com/HazelnutParadise/insyra@v0.2.14 --yes
 ```
 
 Delete all versions of a module/package for the current platform:
@@ -66,6 +66,5 @@ usegolib artifact rm --module github.com/HazelnutParadise/insyra --all-versions 
 Rebuild into the artifact root (optionally cleaning existing artifacts and re-downloading sources):
 
 ```bash
-usegolib artifact rebuild --module github.com/HazelnutParadise/insyra --version v0.2.14 --clean --redownload
+usegolib artifact rebuild --module github.com/HazelnutParadise/insyra@v0.2.14 --clean --redownload
 ```
-

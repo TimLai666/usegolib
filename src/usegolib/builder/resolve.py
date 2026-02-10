@@ -56,6 +56,16 @@ def resolve_module_target(
         module_path = _read_module_path(module_dir)
         return ResolvedModule(module_path=module_path, version="local", module_dir=module_dir)
 
+    # Support `go get` style syntax: `module@version`.
+    # We only parse this for remote targets (local directory paths are handled above).
+    if "@" in target:
+        base, inline = target.rsplit("@", 1)
+        if base and inline:
+            if version is not None:
+                raise BuildError("conflicting version: use either target@version or version=, not both")
+            target = base
+            version = inline
+
     wanted = version
     if wanted is None or wanted == "latest":
         wanted = "@latest"

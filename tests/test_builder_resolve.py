@@ -67,3 +67,30 @@ def test_resolve_remote_subpackage_trims_segments(monkeypatch):
     assert r.version == "v9.9.9"
     assert calls[0].startswith("example.com/mod/subpkg@")
     assert calls[1].startswith("example.com/mod@")
+
+
+def test_resolve_remote_parses_inline_at_version(monkeypatch):
+    from usegolib.builder import resolve as rmod
+    from usegolib.builder.resolve import resolve_module_target
+
+    seen: list[str] = []
+
+    def fake_download(arg: str, *, env=None) -> dict:  # noqa: ANN001
+        seen.append(arg)
+        return {"Path": "example.com/remote", "Version": "v1.2.3", "Dir": "/tmp/x"}
+
+    monkeypatch.setattr(rmod, "_go_mod_download_json", fake_download)
+    r = resolve_module_target(target="example.com/remote@v1.2.3", version=None)
+    assert r.module_path == "example.com/remote"
+    assert r.version == "v1.2.3"
+    assert seen == ["example.com/remote@v1.2.3"]
+
+
+def test_resolve_remote_inline_version_conflict(monkeypatch):
+    import pytest
+
+    from usegolib.builder.resolve import resolve_module_target
+    from usegolib.errors import BuildError
+
+    with pytest.raises(BuildError, match=r"conflicting version"):
+        resolve_module_target(target="example.com/remote@v1.2.3", version="v9.9.9")

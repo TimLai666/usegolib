@@ -23,7 +23,7 @@ Fix:
 Tip: you can delete cached artifacts via the CLI:
 
 ```bash
-usegolib artifact rm --module example.com/mod --version vX.Y.Z --yes
+usegolib artifact rm --module example.com/mod@vX.Y.Z --yes
 usegolib artifact rm --module example.com/mod --all-versions --yes
 ```
 
