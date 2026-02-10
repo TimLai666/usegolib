@@ -23,6 +23,8 @@ def main() -> None:
     print("DataList.Sum() ->", dl.Sum())
     print("DataList.Mean() ->", dl.Mean())
     print("DataList.Data() ->", dl.Data())
+    print("DataList.Show() ->")
+    dl.Show()
 
     # --- DataTable (variadic map[string]any + variadic bool) ---
     dt = insyra.object("DataTable")
@@ -30,7 +32,8 @@ def main() -> None:
     print("DataTable.NumRows() ->", dt.NumRows())
     print("DataTable.NumCols() ->", dt.NumCols())
     print("DataTable.Data(True) ->", dt.Data(True))
-
+    print("DataTable.Show() ->")
+    dt.Show()
 
 if __name__ == "__main__":
     main()
