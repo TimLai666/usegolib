@@ -105,3 +105,10 @@ The repository SHALL document in `README.md` when the Go toolchain is required (
 - **THEN** it contains a section explaining that end-users do not need Go when using prebuilt artifacts/wheels
 - **AND THEN** it explains that auto-build (downloading/building missing artifacts) requires a Go toolchain
 
+### Requirement: Roadmap Milestone Ordering Is Consistent
+The repository SHALL keep `docs/roadmap.md` milestones ordered by increasing milestone number to avoid confusion about sequencing.
+
+#### Scenario: Milestones are ordered
+- **WHEN** a developer reads `docs/roadmap.md`
+- **THEN** Milestone sections appear in increasing numerical order (e.g. 4, 5, 6)
+
