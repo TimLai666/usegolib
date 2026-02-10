@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +17,36 @@ class ResolvedModule:
     module_path: str
     version: str
     module_dir: Path
+
+
+_GO_TRANSIENT_NET_RE = re.compile(
+    r"("
+    r"proxy\.golang\.org"
+    r"|sum\.golang\.org"
+    r"|wsarecv"
+    r"|connection (?:attempt failed|reset)"
+    r"|i/o timeout"
+    r"|tls handshake timeout"
+    r"|unexpected eof"
+    r"|temporary failure"
+    r"|no such host"
+    r"|502 bad gateway"
+    r"|503 service unavailable"
+    r"|504 gateway timeout"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _go_network_hint(out: str) -> str | None:
+    if not _GO_TRANSIENT_NET_RE.search(out):
+        return None
+    return (
+        "\n\nHint: Go module download failed due to a network/proxy error. "
+        "Try re-running the command. If `proxy.golang.org` is blocked/unreliable "
+        "in your environment, try setting `GOPROXY=direct` (or another reachable proxy) "
+        "and retry."
+    )
 
 
 def _read_module_path(module_dir: Path) -> str:
@@ -101,31 +134,65 @@ def _go_mod_download_json(arg: str, *, env: dict[str, str] | None) -> dict:
     # `go mod download` does not require being inside a module, but to be robust
     # across environments, run in a temp directory.
     with tempfile.TemporaryDirectory(prefix="usegolib-moddl-") as td:
-        try:
-            proc = subprocess.run(
-                ["go", "mod", "download", "-json", arg],
-                cwd=td,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=False,
-                check=False,
-            )
-        except FileNotFoundError as e:
-            raise BuildError(
-                "Go toolchain not found (`go` is missing from PATH). "
-                "Install Go and ensure `go` is available on PATH. "
-                "If you do not want auto-build on import, pass `build_if_missing=False` "
-                "(and use prebuilt artifacts/wheels)."
-            ) from e
-        out = (proc.stdout or b"").decode("utf-8", errors="replace")
-        if proc.returncode != 0:
+        max_attempts = 3
+        backoff_s = 0.5
+        base_env = env
+        cur_env = env
+        last_out = ""
+
+        for attempt in range(max_attempts):
+            try:
+                proc = subprocess.run(
+                    ["go", "mod", "download", "-json", arg],
+                    cwd=td,
+                    env=cur_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=False,
+                    check=False,
+                )
+            except FileNotFoundError as e:
+                raise BuildError(
+                    "Go toolchain not found (`go` is missing from PATH). "
+                    "Install Go and ensure `go` is available on PATH. "
+                    "If you do not want auto-build on import, pass `build_if_missing=False` "
+                    "(and use prebuilt artifacts/wheels)."
+                ) from e
+
+            out = (proc.stdout or b"").decode("utf-8", errors="replace")
+            last_out = out
+            if proc.returncode == 0:
+                break
+
+            if attempt < max_attempts - 1 and _GO_TRANSIENT_NET_RE.search(out):
+                if "proxy.golang.org" in out.lower():
+                    if base_env is None:
+                        next_env = dict(os.environ)
+                    else:
+                        next_env = dict(base_env)
+                    if "GOPROXY" not in next_env:
+                        next_env["GOPROXY"] = "direct"
+                        cur_env = next_env
+                time.sleep(backoff_s)
+                backoff_s *= 2.0
+                continue
+
+            hint = _go_network_hint(out)
+            if hint:
+                out = out.rstrip("\n") + hint + "\n"
             raise BuildError(f"go mod download failed for {arg}\n{out}")
+
+        if proc.returncode != 0:
+            hint = _go_network_hint(last_out)
+            if hint:
+                last_out = last_out.rstrip("\n") + hint + "\n"
+            raise BuildError(f"go mod download failed for {arg}\n{last_out}")
         try:
-            return json.loads(out)
+            return json.loads(last_out)
         except Exception:
             # Go may print non-JSON lines (e.g. toolchain switching messages) to stderr,
             # which we merge into stdout for portability. Extract the first JSON object.
+            out = last_out
             start = out.find("{")
             if start == -1:
                 raise BuildError(f"failed to parse go mod download output for {arg}")

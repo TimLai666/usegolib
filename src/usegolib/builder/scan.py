@@ -1,12 +1,45 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from ..errors import BuildError
 from .symbols import ExportedFunc, ExportedMethod, GenericFuncDef, ModuleScan, StructField
+
+
+_GO_TRANSIENT_NET_RE = re.compile(
+    r"("
+    r"proxy\.golang\.org"
+    r"|sum\.golang\.org"
+    r"|wsarecv"
+    r"|connection (?:attempt failed|reset)"
+    r"|i/o timeout"
+    r"|tls handshake timeout"
+    r"|unexpected eof"
+    r"|temporary failure"
+    r"|no such host"
+    r"|502 bad gateway"
+    r"|503 service unavailable"
+    r"|504 gateway timeout"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _go_network_hint(out: str) -> str | None:
+    if not _GO_TRANSIENT_NET_RE.search(out):
+        return None
+    return (
+        "\n\nHint: Go module download failed due to a network/proxy error. "
+        "Try re-running the command. If `proxy.golang.org` is blocked/unreliable "
+        "in your environment, try setting `GOPROXY=direct` (or another reachable proxy) "
+        "and retry."
+    )
 
 
 def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> ModuleScan:
@@ -32,16 +65,40 @@ def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> Modul
         )
         (scan_dir / "main.go").write_text(_scanner_go_source(), encoding="utf-8")
 
+        proc = None
+        out = ""
+        max_attempts = 3
+        backoff_s = 0.5
+        base_env = env
+        cur_env = env
         try:
-            proc = subprocess.run(
-                ["go", "run", ".", "--module-dir", str(module_dir)],
-                cwd=str(scan_dir),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=False,
-                check=False,
-            )
+            for attempt in range(max_attempts):
+                proc = subprocess.run(
+                    ["go", "run", ".", "--module-dir", str(module_dir)],
+                    cwd=str(scan_dir),
+                    env=cur_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=False,
+                    check=False,
+                )
+                out = (proc.stdout or b"").decode("utf-8", errors="replace")
+                if proc.returncode == 0:
+                    break
+
+                if attempt < max_attempts - 1 and _GO_TRANSIENT_NET_RE.search(out):
+                    if "proxy.golang.org" in out.lower():
+                        if base_env is None:
+                            next_env = dict(os.environ)
+                        else:
+                            next_env = dict(base_env)
+                        if "GOPROXY" not in next_env:
+                            next_env["GOPROXY"] = "direct"
+                            cur_env = next_env
+                    time.sleep(backoff_s)
+                    backoff_s *= 2.0
+                    continue
+                break
         except FileNotFoundError as e:
             raise BuildError(
                 "Go toolchain not found (`go` is missing from PATH). "
@@ -49,12 +106,13 @@ def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> Modul
                 "If you do not want auto-build on import, pass `build_if_missing=False` "
                 "(and use prebuilt artifacts/wheels)."
             ) from e
-        if proc.returncode != 0:
-            out = (proc.stdout or b"").decode("utf-8", errors="replace")
+        if proc is None or proc.returncode != 0:
+            hint = _go_network_hint(out)
+            if hint:
+                out = out.rstrip("\n") + hint + "\n"
             raise BuildError(f"go scan failed\n{out}")
 
         try:
-            out = (proc.stdout or b"").decode("utf-8", errors="replace")
             try:
                 obj = json.loads(out)
             except Exception:

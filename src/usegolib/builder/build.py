@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,31 +22,107 @@ from .symbols import ExportedFunc, ExportedMethod, GenericFuncDef, GenericInstan
 from .zig import ensure_zig
 
 
+_GO_TRANSIENT_NET_RE = re.compile(
+    r"("
+    r"proxy\.golang\.org"
+    r"|sum\.golang\.org"
+    r"|wsarecv"
+    r"|connection (?:attempt failed|reset)"
+    r"|i/o timeout"
+    r"|tls handshake timeout"
+    r"|unexpected eof"
+    r"|temporary failure"
+    r"|no such host"
+    r"|502 bad gateway"
+    r"|503 service unavailable"
+    r"|504 gateway timeout"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _go_network_hint(out: str) -> str | None:
+    if not _GO_TRANSIENT_NET_RE.search(out):
+        return None
+    return (
+        "\n\nHint: Go module download failed due to a network/proxy error. "
+        "Try re-running the command. If `proxy.golang.org` is blocked/unreliable "
+        "in your environment, try setting `GOPROXY=direct` (or another reachable proxy) "
+        "and retry."
+    )
+
+
 def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=False,
-            check=False,
-        )
-    except FileNotFoundError as e:
-        prog = cmd[0] if cmd else "<unknown>"
-        if prog == "go":
-            raise BuildError(
-                "Go toolchain not found (`go` is missing from PATH). "
-                "Install Go and ensure `go` is available on PATH. "
-                "If you do not want auto-build on import, pass `build_if_missing=False` "
-                "(and use prebuilt artifacts/wheels)."
-            ) from e
-        raise BuildError(f"command not found: {prog}") from e
-    out = (proc.stdout or b"").decode("utf-8", errors="replace")
-    if proc.returncode != 0:
+    prog = cmd[0] if cmd else "<unknown>"
+
+    # Go commands that touch the module graph frequently fail due to transient
+    # proxy/network issues. Retry with a short backoff and optionally fall back
+    # to GOPROXY=direct if the proxy is the failing hop.
+    max_attempts = 1
+    if prog == "go":
+        max_attempts = 3
+
+    base_env = env
+    cur_env = env
+    backoff_s = 0.5
+    last_out = ""
+
+    for attempt in range(max_attempts):
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(cwd),
+                env=cur_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,
+                check=False,
+            )
+        except FileNotFoundError as e:
+            if prog == "go":
+                raise BuildError(
+                    "Go toolchain not found (`go` is missing from PATH). "
+                    "Install Go and ensure `go` is available on PATH. "
+                    "If you do not want auto-build on import, pass `build_if_missing=False` "
+                    "(and use prebuilt artifacts/wheels)."
+                ) from e
+            raise BuildError(f"command not found: {prog}") from e
+
+        stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+        out = "\n".join([s for s in [stdout.strip("\n"), stderr.strip("\n")] if s]) + "\n"
+        last_out = out
+
+        if proc.returncode == 0:
+            return stdout
+
+        # Retry only for `go` and only when we see a likely transient network error.
+        if prog == "go" and attempt < max_attempts - 1 and _GO_TRANSIENT_NET_RE.search(out):
+            # First retry: if the proxy seems to be the failing hop and GOPROXY is not
+            # explicitly set, try falling back to GOPROXY=direct for the next attempt.
+            if "proxy.golang.org" in out.lower():
+                if base_env is None:
+                    # Caller didn't pass env: copy process env so we can safely override.
+                    next_env = dict(os.environ)
+                else:
+                    next_env = dict(base_env)
+                if "GOPROXY" not in next_env:
+                    next_env["GOPROXY"] = "direct"
+                    cur_env = next_env
+            time.sleep(backoff_s)
+            backoff_s *= 2.0
+            continue
+
+        hint = _go_network_hint(out)
+        if hint:
+            out = out.rstrip("\n") + hint + "\n"
         raise BuildError(f"command failed: {' '.join(cmd)}\n{out}")
-    return out
+
+    # Defensive: loop always returns/raises, but keep a fallback.
+    hint = _go_network_hint(last_out)
+    if hint:
+        last_out = last_out.rstrip("\n") + hint + "\n"
+    raise BuildError(f"command failed: {' '.join(cmd)}\n{last_out}")
 
 
 def _read_module_path(module_dir: Path) -> str:
