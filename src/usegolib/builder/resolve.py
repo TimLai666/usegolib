@@ -123,7 +123,12 @@ def _resolve_remote_module(
             mod_version = str(info["Version"])
             mod_dir = Path(str(info["Dir"])).resolve()
             return mod_path, mod_version, mod_dir
-        except BuildError:
+        except BuildError as e:
+            # If the failure looks like a transient network/proxy problem, do not
+            # "walk up" the import path: it hides the real error and can produce
+            # misleading messages like `github.com@vX.Y.Z`.
+            if _GO_TRANSIENT_NET_RE.search(str(e)):
+                raise
             # Trim one path segment and try again.
             if "/" not in candidate:
                 raise

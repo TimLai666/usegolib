@@ -69,6 +69,28 @@ def test_resolve_remote_subpackage_trims_segments(monkeypatch):
     assert calls[1].startswith("example.com/mod@")
 
 
+def test_resolve_remote_does_not_trim_on_transient_network_errors(monkeypatch):
+    import pytest
+
+    from usegolib.builder import resolve as rmod
+    from usegolib.builder.resolve import resolve_module_target
+    from usegolib.errors import BuildError
+
+    calls: list[str] = []
+
+    def fake_download(arg: str, *, env=None) -> dict:  # noqa: ANN001
+        calls.append(arg)
+        raise BuildError('read "https://proxy.golang.org/x/y/@v/v0.0.0.zip": i/o timeout')
+
+    monkeypatch.setattr(rmod, "_go_mod_download_json", fake_download)
+
+    with pytest.raises(BuildError):
+        resolve_module_target(target="example.com/mod/subpkg", version="v1.2.3")
+
+    # Should not try parent segments (would hide the real error).
+    assert calls == ["example.com/mod/subpkg@v1.2.3"]
+
+
 def test_resolve_remote_parses_inline_at_version(monkeypatch):
     from usegolib.builder import resolve as rmod
     from usegolib.builder.resolve import resolve_module_target
