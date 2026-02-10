@@ -86,7 +86,7 @@ When building artifacts from a Go import path, the system SHALL resolve a concre
 
 #### Scenario: Version omitted defaults to @latest for remote modules
 - **WHEN** `usegolib build` is invoked with a Go module import path and `version=None`
-- **THEN** the system resolves the version to `@latest`
+- **THEN** the system resolves the version query to `@latest`
 - **AND THEN** the manifest `version` field contains the resolved concrete version
 
 #### Scenario: Pinned version is used as-is for remote modules

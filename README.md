@@ -51,6 +51,17 @@ h = usegolib.import_("example.com/mod")
 print(h.AddInt(1, 2))
 ```
 
+Remote modules/packages (dev): you can also pass a Go import path. If the artifact is
+missing in the default cache, `usegolib` will download the module (via `go mod download`)
+and build it automatically.
+
+```python
+import usegolib
+
+h = usegolib.import_("github.com/yourorg/insyra")
+sub = usegolib.import_("github.com/yourorg/insyra/subpkg")
+```
+
 Typed wrappers (when schema is present in the artifact manifest):
 
 ```python

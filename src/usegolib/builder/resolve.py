@@ -30,7 +30,9 @@ def resolve_module_target(*, target: str, version: str | None) -> ResolvedModule
         module_path = _read_module_path(module_dir)
         return ResolvedModule(module_path=module_path, version="local", module_dir=module_dir)
 
-    wanted = version or "latest"
+    wanted = version
+    if wanted is None or wanted == "latest":
+        wanted = "@latest"
     mod_path, mod_version, mod_dir = _resolve_remote_module(import_path=target, wanted=wanted)
     return ResolvedModule(module_path=mod_path, version=mod_version, module_dir=mod_dir)
 
@@ -62,7 +64,10 @@ def _resolve_remote_module(*, import_path: str, wanted: str) -> tuple[str, str, 
     candidate = import_path
     while True:
         try:
-            info = _go_mod_download_json(f"{candidate}@{wanted}")
+            # `go mod download` uses special queries like `@latest`.
+            # Allow callers to pass `wanted` with or without the leading "@".
+            arg = f"{candidate}{wanted}" if wanted.startswith("@") else f"{candidate}@{wanted}"
+            info = _go_mod_download_json(arg)
             mod_path = str(info["Path"])
             mod_version = str(info["Version"])
             mod_dir = Path(str(info["Dir"])).resolve()
