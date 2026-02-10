@@ -80,33 +80,30 @@ h = usegolib.import_("example.com/mod", artifact_dir="out/artifact", build_if_mi
 
 Insyra is a Go data-analysis library: `github.com/HazelnutParadise/insyra`.
 
-Build an artifact (build machine):
-
-```bash
-python -m usegolib build --module github.com/HazelnutParadise/insyra --out out/artifact
-```
-
-Call exported functions from Python:
+Dev-mode auto-build (downloads the module + builds into usegolib's default artifact root):
 
 ```python
 import usegolib
 
-insyra = usegolib.import_("github.com/HazelnutParadise/insyra", artifact_dir="out/artifact")
+insyra = usegolib.import_("github.com/HazelnutParadise/insyra", version="v0.2.14")
 
-# Example functions with simple signatures:
-col, ok = insyra.CalcColIndex(28)
-print(col, ok)  # "AB", True
+# DataList (object handle + variadic any)
+dl = insyra.object("DataList")
+dl.Append(1, 2, 3, 4, 5)
+print(dl.Sum(), dl.Mean())
 
-n, ok = insyra.ParseColIndex("AB")
-print(n, ok)  # 28, True
+# DataTable (variadic map[string]any + variadic bool)
+dt = insyra.object("DataTable")
+dt.AppendRowsByColIndex({"A": 1, "B": 2}, {"A": 3, "B": 4})
+print(dt.NumRows(), dt.NumCols())
+print(dt.Data(True))
 ```
 
 Notes:
 
 - `usegolib` can only call functions/methods whose parameter and return types are supported by the current type bridge (see `docs/abi.md`).
-- For APIs that revolve around complex pointer types (e.g. `*DataTable`), you typically need either:
-  - wrapper functions that exchange plain record structs across the ABI, or
-  - object-handle based APIs (see next section).
+- This example requires a Go toolchain to be installed. (At the time of writing, `insyra@v0.2.14` requires `go >= 1.25`.)
+- For end-users without Go, ship prebuilt artifacts/wheels (see Packaging).
 
 ## Methods (Object Handles)
 
