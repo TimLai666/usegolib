@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .symbols import ExportedFunc
+from .symbols import ExportedFunc, ExportedMethod, ExportedVar, GenericInstantiation
 
 
 def write_bridge(
@@ -10,22 +10,43 @@ def write_bridge(
     bridge_dir: Path,
     module_path: str,
     functions: list[ExportedFunc],
+    methods: list[ExportedMethod] | None = None,
+    generic_instantiations: list[GenericInstantiation] | None = None,
+    vars: list[ExportedVar] | None = None,
     struct_types_by_pkg: dict[str, set[str]] | None = None,
+    opaque_struct_types_by_pkg: dict[str, set[str]] | None = None,
     adapter_types: set[str] | None = None,
 ) -> None:
     # Generate a single `main` package for `-buildmode=c-shared`.
     struct_types_by_pkg = struct_types_by_pkg or {}
+    opaque_struct_types_by_pkg = opaque_struct_types_by_pkg or {}
+    methods = methods or []
+    generic_instantiations = generic_instantiations or []
+    vars = vars or []
     adapter_types = adapter_types or set()
     imports: dict[str, str] = {}
     for fn in functions:
         if fn.pkg not in imports:
             alias = f"p{len(imports)}"
             imports[fn.pkg] = alias
+    for m in methods:
+        if m.pkg not in imports:
+            alias = f"p{len(imports)}"
+            imports[m.pkg] = alias
+    for gi in generic_instantiations:
+        if gi.pkg not in imports:
+            alias = f"p{len(imports)}"
+            imports[gi.pkg] = alias
+    for v in vars:
+        if v.pkg not in imports:
+            alias = f"p{len(imports)}"
+            imports[v.pkg] = alias
 
-    reg_lines: list[str] = []
+    func_reg_lines: list[str] = []
+    method_reg_lines: list[str] = []
     wrap_lines: list[str] = []
 
-    needs_reflect = False
+    needs_reflect = True  # Object handles require reflection helpers.
     allowed_struct_type_keys: set[str] = set()
     for pkg, names in struct_types_by_pkg.items():
         for n in names:
@@ -36,8 +57,9 @@ def write_bridge(
         key = f"{fn.pkg}:{fn.name}"
         wrap_name = f"wrap_{alias}_{fn.name}"
 
-        reg_lines.append(f'        "{key}": {wrap_name},')
+        func_reg_lines.append(f'        "{key}": {wrap_name},')
         struct_types = struct_types_by_pkg.get(fn.pkg, set())
+        opaque_struct_types = opaque_struct_types_by_pkg.get(fn.pkg, set())
         if any(_base_type(t) in struct_types for t in fn.params) or any(
             _base_type(t) in struct_types for t in fn.results
         ):
@@ -52,9 +74,75 @@ def write_bridge(
                 alias=alias,
                 fn=fn,
                 struct_types=struct_types,
+                opaque_struct_types=opaque_struct_types,
             )
         )
         wrap_lines.append("")
+
+    for gi in generic_instantiations:
+        alias = imports[gi.pkg]
+        key = f"{gi.pkg}:{gi.symbol}"
+        wrap_name = f"wrapg_{alias}_{gi.symbol}"
+
+        func_reg_lines.append(f'        "{key}": {wrap_name},')
+        struct_types = struct_types_by_pkg.get(gi.pkg, set())
+        opaque_struct_types = opaque_struct_types_by_pkg.get(gi.pkg, set())
+        wrap_lines.extend(
+            _write_generic_wrapper(
+                wrap_name=wrap_name,
+                alias=alias,
+                gi=gi,
+                struct_types=struct_types,
+                opaque_struct_types=opaque_struct_types,
+            )
+        )
+        wrap_lines.append("")
+
+    for v in vars:
+        alias = imports[v.pkg]
+        key = f"{v.pkg}:__usegolib_getvar_{v.name}"
+        wrap_name = f"wrapv_{alias}_{v.name}"
+        func_reg_lines.append(f'        "{key}": {wrap_name},')
+        wrap_lines.extend(_write_var_get_wrapper(wrap_name=wrap_name, alias=alias, v=v))
+        wrap_lines.append("")
+
+    obj_type_keys: set[str] = set()
+    for m in methods:
+        alias = imports[m.pkg]
+        type_key = f"{m.pkg}.{m.recv}"
+        obj_type_keys.add(type_key)
+        method_key = f"{type_key}:{m.name}"
+        wrap_name = f"wrapm_{alias}_{m.recv}_{m.name}"
+        method_reg_lines.append(f'        "{method_key}": {wrap_name},')
+
+        struct_types = struct_types_by_pkg.get(m.pkg, set())
+        opaque_struct_types = opaque_struct_types_by_pkg.get(m.pkg, set())
+        if any(_base_type(t) in struct_types for t in m.params) or any(
+            _base_type(t) in struct_types for t in m.results
+        ):
+            needs_reflect = True
+        if any(_base_type(t) in adapter_types for t in m.params) or any(
+            _base_type(t) in adapter_types for t in m.results
+        ):
+            needs_reflect = True
+        wrap_lines.extend(
+            _write_method_wrapper(
+                wrap_name=wrap_name,
+                alias=alias,
+                m=m,
+                struct_types=struct_types,
+                opaque_struct_types=opaque_struct_types,
+            )
+        )
+        wrap_lines.append("")
+    type_lines: list[str] = []
+    for m in methods:
+        type_key = f"{m.pkg}.{m.recv}"
+        # De-dupe by key.
+        if any(ln.startswith(f'        "{type_key}":') for ln in type_lines):
+            continue
+        alias = imports[m.pkg]
+        type_lines.append(f'        "{type_key}": reflect.TypeOf({alias}.{m.recv}{{}}),')
 
     src = "\n".join(
         [
@@ -77,6 +165,10 @@ def write_bridge(
             '    Op  string `msgpack:"op"`',
             '    Pkg string `msgpack:"pkg"`',
             '    Fn  string `msgpack:"fn"`',
+            '    Type string `msgpack:"type,omitempty"`',
+            '    ID uint64 `msgpack:"id,omitempty"`',
+            '    Method string `msgpack:"method,omitempty"`',
+            '    Init any `msgpack:"init,omitempty"`',
             '    Args []any `msgpack:"args"`',
             "}",
             "",
@@ -93,12 +185,194 @@ def write_bridge(
             "}",
             "",
             "type Handler func(args []any) (any, *ErrorObj)",
+            "type MethodHandler func(obj any, args []any) (any, *ErrorObj)",
             "",
             "var dispatch = map[string]Handler{}",
+            "var methodDispatch = map[string]MethodHandler{}",
+            "var typeByKey = map[string]reflect.Type{}",
+            "",
+            "type ObjEntry struct {",
+            "    Key string",
+            "    Obj any",
+            "}",
+            "",
+            "var objNext uint64",
+            "var objMu sync.RWMutex",
+            "var objByID = map[uint64]ObjEntry{}",
+            "",
+            "func storeObj(typeKey string, obj any) uint64 {",
+                "    id := atomic.AddUint64(&objNext, 1)",
+            "    objMu.Lock()",
+            "    objByID[id] = ObjEntry{Key: typeKey, Obj: obj}",
+            "    objMu.Unlock()",
+            "    return id",
+            "}",
+            "",
+            "func isExportedIdent(name string) bool {",
+            "    if name == \"\" {",
+            "        return false",
+            "    }",
+            "    r := rune(name[0])",
+            "    return r >= 'A' && r <= 'Z'",
+            "}",
+            "",
+            "func reflectCallMethod(pkg string, typeName string, obj any, method string, args []any) (any, *ErrorObj) {",
+            "    rv := reflect.ValueOf(obj)",
+            "    if !rv.IsValid() {",
+            '        return nil, &ErrorObj{Type: "ObjectNotFound", Message: "invalid object"}',
+            "    }",
+            "    mv := rv.MethodByName(method)",
+            "    if !mv.IsValid() {",
+            '        return nil, &ErrorObj{Type: "MethodNotFound", Message: "method not found"}',
+            "    }",
+            "    mt := mv.Type()",
+            "    nin := mt.NumIn()",
+            "    isVar := mt.IsVariadic()",
+            "    if !isVar {",
+            "        if len(args) != nin {",
+            '            return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}',
+            "        }",
+            "    } else {",
+            "        if len(args) < nin-1 {",
+            '            return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}',
+            "        }",
+            "    }",
+            "",
+            "    // Variadic calls are represented over the ABI as a single final argument: a slice.",
+            "    // When len(args) == nin, the last arg is already packed and must be expanded with CallSlice.",
+            "    if isVar && len(args) == nin {",
+            "        callArgs := make([]reflect.Value, 0, nin)",
+            "        for i := 0; i < nin-1; i++ {",
+            "            pt := mt.In(i)",
+            "            cv, ok := convertToType(args[i], pt)",
+            "            if !ok {",
+            '                return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}',
+            "            }",
+            "            callArgs = append(callArgs, cv)",
+            "        }",
+            "        pt := mt.In(nin - 1)",
+            "        cv, ok := convertToType(args[nin-1], pt)",
+            "        if !ok {",
+            '            return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}',
+            "        }",
+            "        callArgs = append(callArgs, cv)",
+            "        outs := mv.CallSlice(callArgs)",
+            "        if len(outs) == 0 {",
+            "            return nil, nil",
+            "        }",
+            "        // Treat trailing error specially (0/1/2 return conventions).",
+            "        if len(outs) == 1 {",
+            "            o0 := outs[0]",
+            "            if o0.IsValid() && o0.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {",
+            "                if o0.IsNil() {",
+            "                    return nil, nil",
+            "                }",
+            "                return nil, &ErrorObj{Type: \"GoError\", Message: o0.Interface().(error).Error()}",
+            "            }",
+            "            return exportResultAsAny(pkg, typeName, o0)",
+            "        }",
+            "        if len(outs) == 2 {",
+            "            o0 := outs[0]",
+            "            o1 := outs[1]",
+            "            if o1.IsValid() && o1.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {",
+            "                if !o1.IsNil() {",
+            "                    return nil, &ErrorObj{Type: \"GoError\", Message: o1.Interface().(error).Error()}",
+            "                }",
+            "                return exportResultAsAny(pkg, typeName, o0)",
+            "            }",
+            "        }",
+            '        return nil, &ErrorObj{Type: "UnsupportedSignatureError", Message: "unsupported method signature"}',
+            "    }",
+            "",
+            "    callArgs := make([]reflect.Value, 0, len(args))",
+            "    for i := 0; i < nin; i++ {",
+            "        pt := mt.In(i)",
+            "        if isVar && i == nin-1 {",
+            "            // Expand remaining args into the variadic element type.",
+            "            et := pt.Elem()",
+            "            for j := i; j < len(args); j++ {",
+                "                cv, ok := convertToType(args[j], et)",
+                "                if !ok {",
+                '                    return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}',
+                "                }",
+                "                callArgs = append(callArgs, cv)",
+            "            }",
+            "            break",
+            "        }",
+            "        cv, ok := convertToType(args[i], pt)",
+            "        if !ok {",
+            '            return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}',
+            "        }",
+            "        callArgs = append(callArgs, cv)",
+            "    }",
+            "",
+            "    outs := mv.Call(callArgs)",
+            "    if len(outs) == 0 {",
+            "        return nil, nil",
+            "    }",
+            "    // Treat trailing error specially (0/1/2 return conventions).",
+            "    if len(outs) == 1 {",
+                "        o0 := outs[0]",
+                "        if o0.IsValid() && o0.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {",
+                    "            if o0.IsNil() {",
+                    "                return nil, nil",
+                    "            }",
+                    "            return nil, &ErrorObj{Type: \"GoError\", Message: o0.Interface().(error).Error()}",
+                "        }",
+                "        return exportResultAsAny(pkg, typeName, o0)",
+            "    }",
+            "    if len(outs) == 2 {",
+                "        o0 := outs[0]",
+                "        o1 := outs[1]",
+                "        if o1.IsValid() && o1.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {",
+                    "            if !o1.IsNil() {",
+                    "                return nil, &ErrorObj{Type: \"GoError\", Message: o1.Interface().(error).Error()}",
+                    "            }",
+                    "            return exportResultAsAny(pkg, typeName, o0)",
+                "        }",
+            "    }",
+            '    return nil, &ErrorObj{Type: "UnsupportedSignatureError", Message: "unsupported method signature"}',
+            "}",
+            "",
+            "func exportResultAsAny(pkg string, typeName string, v reflect.Value) (any, *ErrorObj) {",
+            "    if !v.IsValid() {",
+            "        return nil, nil",
+            "    }",
+            "    if v.Kind() == reflect.Interface {",
+            "        if v.IsNil() {",
+            "            return nil, nil",
+            "        }",
+            "        v = v.Elem()",
+            "    }",
+            "    if v.Kind() == reflect.Ptr {",
+            "        if v.IsNil() {",
+            "            return nil, nil",
+            "        }",
+            "        if v.Elem().Kind() == reflect.Struct {",
+            "            // Only support returning object handles for structs defined in the same package as the request.",
+            "            rt := v.Elem().Type()",
+            "            if rt.PkgPath() == pkg {",
+                "                id := storeObj(pkg+\".\"+rt.Name(), v.Interface())",
+            "                return id, nil",
+            "            }",
+            "        }",
+            "    }",
+            "    av, ok := exportAny(v)",
+            "    if !ok {",
+            '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}',
+            "    }",
+            "    return av, nil",
+            "}",
             "",
             "func init() {",
             "    dispatch = map[string]Handler{",
-            *reg_lines,
+                *func_reg_lines,
+            "    }",
+            "    methodDispatch = map[string]MethodHandler{",
+            *method_reg_lines,
+            "    }",
+            "    typeByKey = map[string]reflect.Type{",
+            *type_lines,
             "    }",
             "}",
             "",
@@ -117,35 +391,125 @@ def write_bridge(
             '        writeError(respPtr, respLen, "UnsupportedABIVersion", "unsupported abi version", map[string]any{"abi": req.ABI})',
             "        return 0",
             "    }",
-            '    if req.Op != "call" {',
+            "",
+            "    switch req.Op {",
+            '    case "call":',
+            '        key := req.Pkg + ":" + req.Fn',
+            "        h := dispatch[key]",
+            "        if h == nil {",
+            '            writeError(respPtr, respLen, "SymbolNotFound", "symbol not found", map[string]any{"pkg": req.Pkg, "fn": req.Fn})',
+            "            return 0",
+            "        }",
+            "",
+            "        var result any",
+            "        var errObj *ErrorObj",
+            "        func() {",
+            "            defer func() {",
+            "                if r := recover(); r != nil {",
+            '                    errObj = &ErrorObj{Type: "GoPanicError", Message: "panic"}',
+            "                }",
+            "            }()",
+            "            result, errObj = h(req.Args)",
+            "        }()",
+            "",
+            "        if errObj != nil {",
+            "            writeResp(respPtr, respLen, &Response{Ok: false, Error: errObj})",
+            "            return 0",
+            "        }",
+            "        writeResp(respPtr, respLen, &Response{Ok: true, Result: result})",
+            "        return 0",
+            '    case "obj_new":',
+            "        typeKey := req.Pkg + \".\" + req.Type",
+            "        rt, ok := typeByKey[typeKey]",
+            "        if !ok {",
+            '            writeError(respPtr, respLen, "TypeNotFound", "type not found", map[string]any{"type": typeKey})',
+            "            return 0",
+            "        }",
+            "        if rt.Kind() != reflect.Struct {",
+            '            writeError(respPtr, respLen, "ABIError", "type is not a struct", map[string]any{"type": typeKey})',
+            "            return 0",
+            "        }",
+            "        sv := reflect.New(rt).Elem()",
+            "        if req.Init != nil {",
+            "            cv, ok := convertToType(req.Init, rt)",
+            "            if !ok {",
+            '                writeError(respPtr, respLen, "UnsupportedTypeError", "invalid init", map[string]any{"type": typeKey})',
+            "                return 0",
+            "            }",
+            "            sv = cv",
+            "        }",
+            "        pv := reflect.New(rt)",
+            "        pv.Elem().Set(sv)",
+            "        obj := pv.Interface()",
+            "",
+            "        id := storeObj(typeKey, obj)",
+            "        writeResp(respPtr, respLen, &Response{Ok: true, Result: id})",
+            "        return 0",
+            '    case "obj_call":',
+            "        typeKey := req.Pkg + \".\" + req.Type",
+            "        objMu.RLock()",
+            "        ent, ok := objByID[req.ID]",
+            "        objMu.RUnlock()",
+            "        if !ok {",
+            '            writeError(respPtr, respLen, "ObjectNotFound", "object not found", map[string]any{"id": req.ID})',
+            "            return 0",
+            "        }",
+            "        if ent.Key != typeKey {",
+            '            writeError(respPtr, respLen, "ABIError", "object type mismatch", map[string]any{"id": req.ID, "type": typeKey})',
+            "            return 0",
+            "        }",
+            "        mk := typeKey + \":\" + req.Method",
+            "        mh := methodDispatch[mk]",
+            "        if mh == nil {",
+            "            // Unexported receiver types cannot be referenced from the bridge package, so we",
+            "            // fall back to reflection-based method invocation for them.",
+            "            if isExportedIdent(req.Type) {",
+            '                writeError(respPtr, respLen, "MethodNotFound", "method not found", map[string]any{\"type\": typeKey, \"method\": req.Method})',
+            "                return 0",
+            "            }",
+            "            var result any",
+            "            var errObj *ErrorObj",
+            "            func() {",
+            "                defer func() {",
+            "                    if r := recover(); r != nil {",
+            '                        errObj = &ErrorObj{Type: "GoPanicError", Message: "panic"}',
+            "                    }",
+            "                }()",
+            "                result, errObj = reflectCallMethod(req.Pkg, req.Type, ent.Obj, req.Method, req.Args)",
+            "            }()",
+            "            if errObj != nil {",
+            "                writeResp(respPtr, respLen, &Response{Ok: false, Error: errObj})",
+            "                return 0",
+            "            }",
+            "            writeResp(respPtr, respLen, &Response{Ok: true, Result: result})",
+            "            return 0",
+            "        }",
+            "        var result any",
+            "        var errObj *ErrorObj",
+            "        func() {",
+            "            defer func() {",
+            "                if r := recover(); r != nil {",
+            '                    errObj = &ErrorObj{Type: "GoPanicError", Message: "panic"}',
+            "                }",
+            "            }()",
+            "            result, errObj = mh(ent.Obj, req.Args)",
+            "        }()",
+            "        if errObj != nil {",
+            "            writeResp(respPtr, respLen, &Response{Ok: false, Error: errObj})",
+            "            return 0",
+            "        }",
+            "        writeResp(respPtr, respLen, &Response{Ok: true, Result: result})",
+            "        return 0",
+            '    case "obj_free":',
+            "        objMu.Lock()",
+            "        delete(objByID, req.ID)",
+            "        objMu.Unlock()",
+            "        writeResp(respPtr, respLen, &Response{Ok: true, Result: nil})",
+            "        return 0",
+            "    default:",
             '        writeError(respPtr, respLen, "UnsupportedOperation", "unsupported op", map[string]any{"op": req.Op})',
             "        return 0",
             "    }",
-            "",
-            '    key := req.Pkg + ":" + req.Fn',
-            "    h := dispatch[key]",
-            "    if h == nil {",
-            '        writeError(respPtr, respLen, "SymbolNotFound", "symbol not found", map[string]any{"pkg": req.Pkg, "fn": req.Fn})',
-            "        return 0",
-            "    }",
-            "",
-            "    var result any",
-            "    var errObj *ErrorObj",
-            "    func() {",
-            "        defer func() {",
-            "            if r := recover(); r != nil {",
-            '                errObj = &ErrorObj{Type: "GoPanicError", Message: "panic"}',
-            "            }",
-            "        }()",
-            "        result, errObj = h(req.Args)",
-            "    }()",
-            "",
-            "    if errObj != nil {",
-            "        writeResp(respPtr, respLen, &Response{Ok: false, Error: errObj})",
-            "        return 0",
-            "    }",
-            "    writeResp(respPtr, respLen, &Response{Ok: true, Result: result})",
-            "    return 0",
             "}",
             "",
             "func writeError(respPtr **C.uchar, respLen *C.size_t, typ string, msg string, detail map[string]any) {",
@@ -186,11 +550,11 @@ def write_bridge(
         "",
         '    "github.com/vmihailenco/msgpack/v5"',
     ]
-    if needs_reflect:
-        import_block.append('    "reflect"')
-        import_block.append('    "strings"')
-    if needs_reflect:
-        import_block.append('    "time"')
+    import_block.append('    "sync"')
+    import_block.append('    "sync/atomic"')
+    import_block.append('    "reflect"')
+    import_block.append('    "strings"')
+    import_block.append('    "time"')
     if "uuid.UUID" in adapter_types:
         import_block.append('    uuid "github.com/google/uuid"')
     for pkg, alias in imports.items():
@@ -225,6 +589,7 @@ def _write_wrapper(
     alias: str,
     fn: ExportedFunc,
     struct_types: set[str],
+    opaque_struct_types: set[str],
 ) -> list[str]:
     # Only support a small set of v0 types.
     lines: list[str] = []
@@ -249,13 +614,37 @@ def _write_wrapper(
             )
         )
 
-    call = f"{alias}.{fn.name}({', '.join(arg_names)})"
+    call_args = list(arg_names)
+    if fn.params and fn.params[-1].strip().startswith("..."):
+        call_args[-1] = call_args[-1] + "..."
+    call = f"{alias}.{fn.name}({', '.join(call_args)})"
     if len(fn.results) == 0:
         lines.append(f"    {call}")
         lines.append("    return nil, nil")
     elif len(fn.results) == 1:
+        t0 = fn.results[0].strip()
+        if t0 == "error":
+            lines.append(f"    err := {call}")
+            lines.append("    if err != nil {")
+            lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+            lines.append("    }")
+            lines.append("    return nil, nil")
+            lines.append("}")
+            return lines
+
         lines.append(f"    r0 := {call}")
-        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{fn.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) == "any" or _base_type(t0) in struct_types or _base_type(t0) in {  # noqa: PLR1714
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -275,7 +664,19 @@ def _write_wrapper(
         lines.append("    if err != nil {")
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
-        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
+        t0 = fn.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{fn.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) in struct_types or _base_type(t0) in {
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -294,6 +695,249 @@ def _write_wrapper(
     return lines
 
 
+def _write_method_wrapper(
+    *,
+    wrap_name: str,
+    alias: str,
+    m: ExportedMethod,
+    struct_types: set[str],
+    opaque_struct_types: set[str],
+) -> list[str]:
+    lines: list[str] = []
+    recv_go = f"*{alias}.{m.recv}"
+    lines.append(f"func {wrap_name}(obj any, args []any) (any, *ErrorObj) {{")
+    lines.append(f"    recv, ok := obj.({recv_go})")
+    lines.append("    if !ok {")
+    lines.append('        return nil, &ErrorObj{Type: "ABIError", Message: "wrong receiver type"}')
+    lines.append("    }")
+    lines.append(f"    if len(args) != {len(m.params)} {{")
+    lines.append('        return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}')
+    lines.append("    }")
+
+    arg_names: list[str] = []
+    for i, t in enumerate(m.params):
+        vn = f"a{i}"
+        arg_names.append(vn)
+        lines.extend(
+            _write_arg_convert(
+                var_name=vn,
+                go_type=t,
+                value_expr=f"args[{i}]",
+                pkg_alias=alias,
+                struct_types=struct_types,
+            )
+        )
+
+    call_args = list(arg_names)
+    if m.params and m.params[-1].strip().startswith("..."):
+        call_args[-1] = call_args[-1] + "..."
+    call = f"recv.{m.name}({', '.join(call_args)})"
+    if len(m.results) == 0:
+        lines.append(f"    {call}")
+        lines.append("    return nil, nil")
+    elif len(m.results) == 1:
+        t0 = m.results[0].strip()
+        if t0 == "error":
+            lines.append(f"    err := {call}")
+            lines.append("    if err != nil {")
+            lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+            lines.append("    }")
+            lines.append("    return nil, nil")
+            lines.append("}")
+            return lines
+
+        lines.append(f"    r0 := {call}")
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{m.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) == "any" or _base_type(t0) in struct_types or _base_type(t0) in {  # noqa: PLR1714
+            "time.Time",
+            "time.Duration",
+            "uuid.UUID",
+        }:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return v0, nil")
+        else:
+            lines.append("    return r0, nil")
+    else:
+        lines.append(f"    r0, err := {call}")
+        lines.append("    if err != nil {")
+        lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+        lines.append("    }")
+        t0 = m.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{m.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) in struct_types or _base_type(t0) in {
+            "time.Time",
+            "time.Duration",
+            "uuid.UUID",
+        }:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return v0, nil")
+        else:
+            lines.append("    return r0, nil")
+
+    lines.append("}")
+    return lines
+
+
+def _write_generic_wrapper(
+    *,
+    wrap_name: str,
+    alias: str,
+    gi: GenericInstantiation,
+    struct_types: set[str],
+    opaque_struct_types: set[str],
+) -> list[str]:
+    lines: list[str] = []
+    lines.append(f"func {wrap_name}(args []any) (any, *ErrorObj) {{")
+    lines.append(f"    if len(args) != {len(gi.params)} {{")
+    lines.append('        return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}')
+    lines.append("    }")
+
+    arg_names: list[str] = []
+    for i, t in enumerate(gi.params):
+        vn = f"a{i}"
+        arg_names.append(vn)
+        lines.extend(
+            _write_arg_convert(
+                var_name=vn,
+                go_type=t,
+                value_expr=f"args[{i}]",
+                pkg_alias=alias,
+                struct_types=struct_types,
+            )
+        )
+
+    type_args_exprs = [
+        _qualify_type(t, pkg_alias=alias, struct_types=struct_types) for t in gi.type_args
+    ]
+    call_args = list(arg_names)
+    if gi.params and gi.params[-1].strip().startswith("..."):
+        call_args[-1] = call_args[-1] + "..."
+    call = f"{alias}.{gi.generic_name}[{', '.join(type_args_exprs)}]({', '.join(call_args)})"
+    if len(gi.results) == 0:
+        lines.append(f"    {call}")
+        lines.append("    return nil, nil")
+    elif len(gi.results) == 1:
+        t0 = gi.results[0].strip()
+        if t0 == "error":
+            lines.append(f"    err := {call}")
+            lines.append("    if err != nil {")
+            lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+            lines.append("    }")
+            lines.append("    return nil, nil")
+            lines.append("}")
+            return lines
+
+        lines.append(f"    r0 := {call}")
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{gi.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) == "any" or _base_type(t0) in struct_types or _base_type(t0) in {  # noqa: PLR1714
+            "time.Time",
+            "time.Duration",
+            "uuid.UUID",
+        }:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return v0, nil")
+        else:
+            lines.append("    return r0, nil")
+    else:
+        lines.append(f"    r0, err := {call}")
+        lines.append("    if err != nil {")
+        lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+        lines.append("    }")
+        t0 = gi.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{gi.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) in struct_types or _base_type(t0) in {
+            "time.Time",
+            "time.Duration",
+            "uuid.UUID",
+        }:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return v0, nil")
+        else:
+            lines.append("    return r0, nil")
+    lines.append("}")
+    return lines
+
+
+def _write_var_get_wrapper(*, wrap_name: str, alias: str, v: ExportedVar) -> list[str]:
+    base = v.type.strip()
+    if base.startswith("*"):
+        base = base[1:].strip()
+    lines: list[str] = []
+    lines.append(f"func {wrap_name}(args []any) (any, *ErrorObj) {{")
+    lines.append("    if len(args) != 0 {")
+    lines.append('        return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}')
+    lines.append("    }")
+    # Store a pointer to the var when possible so pointer-receiver methods work.
+    if v.type.strip().startswith("*"):
+        lines.append(f"    obj := {alias}.{v.name}")
+    else:
+        lines.append(f"    obj := &{alias}.{v.name}")
+    lines.append(f'    id := storeObj("{v.pkg}.{base}", obj)')
+    lines.append("    return id, nil")
+    lines.append("}")
+    return lines
+
+
 def _conv_expr(go_type: str, v: str) -> str:
     raise AssertionError(f"unexpected: {_conv_expr.__name__} called for {go_type}/{v}")
 
@@ -301,6 +945,10 @@ def _conv_expr(go_type: str, v: str) -> str:
 def _base_type(go_type: str) -> str:
     t = go_type.strip()
     while True:
+        # Variadic `...T` behaves like a slice `[]T` inside the wrapper.
+        if t.startswith("..."):
+            t = t[3:].strip()
+            continue
         if t.startswith("*"):
             t = t[1:].strip()
             continue
@@ -317,6 +965,9 @@ def _qualify_type(go_type: str, *, pkg_alias: str, struct_types: set[str]) -> st
     t = go_type.strip()
     if t.startswith("*"):
         return "*" + _qualify_type(t[1:], pkg_alias=pkg_alias, struct_types=struct_types)
+    if t.startswith("..."):
+        # Variadic `...T` is a slice type `[]T` when referenced as a value type.
+        return "[]" + _qualify_type(t[3:], pkg_alias=pkg_alias, struct_types=struct_types)
     if t.startswith("[]"):
         return "[]" + _qualify_type(t[2:], pkg_alias=pkg_alias, struct_types=struct_types)
     if t.startswith("map[string]"):
@@ -344,6 +995,14 @@ def _write_arg_convert(
         lines.append(
             '    return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}'
         )
+
+    # Normalize variadics: `...T` is received over ABI as a single slice arg.
+    if go_type.strip().startswith("..."):
+        go_type = "[]" + go_type.strip()[3:].strip()
+
+    if go_type == "any":
+        lines.append(f"    {var_name} := {value_expr}")
+        return lines
 
     if _base_type(go_type) in struct_types:
         typ = _qualify_type(go_type, pkg_alias=pkg_alias, struct_types=struct_types)
@@ -380,6 +1039,13 @@ def _write_arg_convert(
     if go_type.startswith("map[string]"):
         vt = go_type[len("map[string]") :]
         tmp = f"t_{var_name}"
+
+        if vt == "any":
+            lines.append(f"    {var_name}, ok := toAnyMap({value_expr})")
+            lines.append("    if !ok {")
+            unsupported()
+            lines.append("    }")
+            return lines
 
         if vt == "int64":
             lines.append(f"    {var_name}, ok := toStringInt64Map({value_expr})")
@@ -530,6 +1196,31 @@ def _write_arg_convert(
         lines.append(f"    {var_name}, ok := toBytes({value_expr})")
         lines.append("    if !ok {")
         unsupported()
+        lines.append("    }")
+        return lines
+
+    if go_type == "[]any":
+        lines.append(f"    {var_name}, ok := toAnySlice({value_expr})")
+        lines.append("    if !ok {")
+        unsupported()
+        lines.append("    }")
+        return lines
+
+    if go_type == "[]map[string]any":
+        tmp = f"t_{var_name}"
+        lines.append(f"    {tmp}, ok := toAnySlice({value_expr})")
+        lines.append("    if !ok {")
+        unsupported()
+        lines.append("    }")
+        lines.append(f"    {var_name} := make([]map[string]any, 0, len({tmp}))")
+        lines.append(f"    for _, item := range {tmp} {{")
+        lines.append("        m, ok := toAnyMap(item)")
+        lines.append("        if !ok {")
+        lines.append(
+            '            return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}'
+        )
+        lines.append("        }")
+        lines.append(f"        {var_name} = append({var_name}, m)")
         lines.append("    }")
         return lines
 
@@ -1080,6 +1771,22 @@ def _write_helpers(
             "        return out, true",
             "    }",
             "    switch t.Kind() {",
+            "    case reflect.Interface:",
+            "        if v == nil {",
+            "            return reflect.Zero(t), true",
+            "        }",
+            "        rv := reflect.ValueOf(v)",
+            "        if rv.Type().AssignableTo(t) {",
+            "            return rv, true",
+            "        }",
+            "        if rv.Type().ConvertibleTo(t) {",
+            "            return rv.Convert(t), true",
+            "        }",
+            "        // Empty interface: accept any value as-is.",
+            "        if t.NumMethod() == 0 {",
+            "            return rv, true",
+            "        }",
+            "        return reflect.Value{}, false",
             "    case reflect.Bool:",
             "        b, ok := toBool(v)",
             "        if !ok {",
@@ -1244,6 +1951,12 @@ def _write_helpers(
             "",
             "func exportAny(v reflect.Value) (any, bool) {",
             "    if v.Kind() == reflect.Ptr {",
+            "        if v.IsNil() {",
+            "            return nil, true",
+            "        }",
+            "        v = v.Elem()",
+            "    }",
+            "    if v.Kind() == reflect.Interface {",
             "        if v.IsNil() {",
             "            return nil, true",
             "        }",

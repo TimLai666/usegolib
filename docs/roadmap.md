@@ -11,7 +11,7 @@ The project has two independent but compatible tracks:
 
 ## Milestones
 
-### Milestone 0 (Project Scaffold + Specs) -> v0.0.1
+### Milestone 0 (Project Scaffold + Specs)
 
 - `openspec/specs/usegolib-core/spec.md` (current truth)
 - `docs/roadmap.md` (this file)
@@ -22,7 +22,7 @@ OpenSpec changes (recommended):
 - `add-project-scaffold`
 - `add-abi-v0-spec`
 
-### Milestone 1 (Runtime Loader + Calls) -> v0.1.0
+### Milestone 1 (Runtime Loader + Calls)
 
 - Python package `usegolib` (runtime loader + ABI client)
 - `ModuleHandle` proxy: `usegolib.import_(...) -> ModuleHandle`, `handle.FuncName(...)` via ABI `call`
@@ -36,7 +36,7 @@ Tests:
 OpenSpec change:
 - `implement-runtime-loader-v0`
 
-### Milestone 2 (Builder + Manifest + Zig Bootstrap) -> v0.2.0
+### Milestone 2 (Builder + Manifest + Zig Bootstrap)
 
 - `usegolib build` CLI:
   - Resolve module/version (`@latest` or pinned)
@@ -54,7 +54,7 @@ OpenSpec changes:
 - `implement-builder-v0`
 - `add-zig-toolchain-bootstrap`
 
-### Milestone 3 (Packager -> Wheel Layout) -> v0.3.0
+### Milestone 3 (Packager -> Wheel Layout)
 
 - `usegolib package` to generate a Python package skeleton embedding artifacts + manifest
 - Wheel build flow where end-user `pip install` does not require Go
@@ -62,15 +62,31 @@ OpenSpec changes:
 OpenSpec change:
 - `add-packager-and-wheel-layout`
 
-### Milestone 4 (Hardening + Type Levels) -> v0.4 - v0.6
+### Milestone 4 (Hardening + Type Levels)
 
 - v0.4: caching + file locking + concurrency safety
 - v0.5: Type bridge Level 2 (`map[string]T`)
 - v0.6: Type bridge Level 3 Phase A (record structs)
 
-### Milestone 5 (ABI Stability + Compatibility Policy) -> v1.0
+### Milestone 5 (ABI Stability + Compatibility Policy)
 
 - ABI/manfiest versioning policy
 - security hardening (hash verification, restricted downloads)
 - production documentation (troubleshooting, compatibility matrix)
 
+### Milestone 6 (API Expansion: Methods + Generics)
+
+This is planned after Milestone 5 (v1.0 readiness) unless explicitly reprioritized.
+
+Current v0.x behavior: generic functions are ignored unless instantiated via `usegolib build --generics`.
+
+- Exported method support (implemented)
+  - Go-side object handles (opaque ids) to avoid serializing receivers on every call
+  - ABI ops: `obj_new`, `obj_call`, `obj_free`
+  - Python API: `PackageHandle.object(type_name, init=None) -> GoObject` and `TypedPackageHandle.object(...) -> TypedGoObject`
+  - Schema/manifest: `schema.methods` (receiver + method signature) for runtime validation and typed decoding
+- Generic function support (Phase A)
+  - support calling exported generic functions by generating concrete instantiations at build time for an explicit set of type arguments (implemented via `usegolib build --generics <json>`)
+  - avoid implicit type inference across the ABI (type arguments are explicit in manifest schema)
+- Generic function support (Phase B)
+  - improve Python ergonomics via `handle.generic(name, type_args)` helper and bindgen output for instantiated symbols

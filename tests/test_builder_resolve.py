@@ -14,3 +14,105 @@ def test_resolve_local_module_dir(tmp_path: Path):
     assert r.version == "local"
     assert r.module_dir == mod_dir.resolve()
 
+
+def test_resolve_local_module_subdir(tmp_path: Path):
+    from usegolib.builder.resolve import resolve_module_target
+
+    mod_dir = tmp_path / "gomod"
+    sub_dir = mod_dir / "subpkg"
+    sub_dir.mkdir(parents=True)
+    (mod_dir / "go.mod").write_text("module example.com/localmod\n\ngo 1.22\n", encoding="utf-8")
+    (mod_dir / "local.go").write_text("package localmod\n", encoding="utf-8")
+    (sub_dir / "sub.go").write_text("package subpkg\n", encoding="utf-8")
+
+    r = resolve_module_target(target=str(sub_dir), version=None)
+    assert r.module_path == "example.com/localmod"
+    assert r.version == "local"
+    assert r.module_dir == mod_dir.resolve()
+
+
+def test_resolve_remote_defaults_to_at_latest(monkeypatch):
+    from usegolib.builder import resolve as rmod
+    from usegolib.builder.resolve import resolve_module_target
+
+    seen: list[str] = []
+
+    def fake_download(arg: str, *, env=None) -> dict:  # noqa: ANN001
+        seen.append(arg)
+        return {"Path": "example.com/remote", "Version": "v1.2.3", "Dir": "/tmp/x"}
+
+    monkeypatch.setattr(rmod, "_go_mod_download_json", fake_download)
+    r = resolve_module_target(target="example.com/remote", version=None)
+    assert r.module_path == "example.com/remote"
+    assert r.version == "v1.2.3"
+    assert seen == ["example.com/remote@latest"]
+
+
+def test_resolve_remote_subpackage_trims_segments(monkeypatch):
+    from usegolib.builder import resolve as rmod
+    from usegolib.builder.resolve import resolve_module_target
+    from usegolib.errors import BuildError
+
+    calls: list[str] = []
+
+    def fake_download(arg: str, *, env=None) -> dict:  # noqa: ANN001
+        calls.append(arg)
+        if arg.startswith("example.com/mod/subpkg@"):
+            raise BuildError("fail")
+        return {"Path": "example.com/mod", "Version": "v9.9.9", "Dir": "/tmp/m"}
+
+    monkeypatch.setattr(rmod, "_go_mod_download_json", fake_download)
+    r = resolve_module_target(target="example.com/mod/subpkg", version=None)
+    assert r.module_path == "example.com/mod"
+    assert r.version == "v9.9.9"
+    assert calls[0].startswith("example.com/mod/subpkg@")
+    assert calls[1].startswith("example.com/mod@")
+
+
+def test_resolve_remote_does_not_trim_on_transient_network_errors(monkeypatch):
+    import pytest
+
+    from usegolib.builder import resolve as rmod
+    from usegolib.builder.resolve import resolve_module_target
+    from usegolib.errors import BuildError
+
+    calls: list[str] = []
+
+    def fake_download(arg: str, *, env=None) -> dict:  # noqa: ANN001
+        calls.append(arg)
+        raise BuildError('read "https://proxy.golang.org/x/y/@v/v0.0.0.zip": i/o timeout')
+
+    monkeypatch.setattr(rmod, "_go_mod_download_json", fake_download)
+
+    with pytest.raises(BuildError):
+        resolve_module_target(target="example.com/mod/subpkg", version="v1.2.3")
+
+    # Should not try parent segments (would hide the real error).
+    assert calls == ["example.com/mod/subpkg@v1.2.3"]
+
+
+def test_resolve_remote_parses_inline_at_version(monkeypatch):
+    from usegolib.builder import resolve as rmod
+    from usegolib.builder.resolve import resolve_module_target
+
+    seen: list[str] = []
+
+    def fake_download(arg: str, *, env=None) -> dict:  # noqa: ANN001
+        seen.append(arg)
+        return {"Path": "example.com/remote", "Version": "v1.2.3", "Dir": "/tmp/x"}
+
+    monkeypatch.setattr(rmod, "_go_mod_download_json", fake_download)
+    r = resolve_module_target(target="example.com/remote@v1.2.3", version=None)
+    assert r.module_path == "example.com/remote"
+    assert r.version == "v1.2.3"
+    assert seen == ["example.com/remote@v1.2.3"]
+
+
+def test_resolve_remote_inline_version_conflict(monkeypatch):
+    import pytest
+
+    from usegolib.builder.resolve import resolve_module_target
+    from usegolib.errors import BuildError
+
+    with pytest.raises(BuildError, match=r"conflicting version"):
+        resolve_module_target(target="example.com/remote@v1.2.3", version="v9.9.9")

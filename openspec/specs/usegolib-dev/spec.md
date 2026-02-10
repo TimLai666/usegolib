@@ -90,3 +90,79 @@ The workflow MUST:
 - **WHEN** a maintainer runs the PyPI publish workflow
 - **THEN** the workflow publishes the built distributions using trusted publishing
 
+### Requirement: Roadmap Includes Planned Method And Generics Support
+The repository SHALL maintain `docs/roadmap.md` to include planned milestones for future support of exported Go methods and generic functions.
+
+#### Scenario: Roadmap describes future method and generics milestones
+- **WHEN** a developer reviews `docs/roadmap.md`
+- **THEN** it includes explicit milestones describing planned support for exported methods and generic functions
+
+### Requirement: README Clarifies Go Toolchain Requirement
+The repository SHALL document in `README.md` when the Go toolchain is required (auto-build/build workflows) versus when it is not required (runtime with prebuilt artifacts/wheels).
+
+#### Scenario: README includes a "Do users need Go?" section
+- **WHEN** a developer reads `README.md`
+- **THEN** it contains a section explaining that end-users do not need Go when using prebuilt artifacts/wheels
+- **AND THEN** it explains that auto-build (downloading/building missing artifacts) requires a Go toolchain
+
+### Requirement: Roadmap Milestone Ordering Is Consistent
+The repository SHALL keep `docs/roadmap.md` milestones ordered by increasing milestone number to avoid confusion about sequencing.
+
+#### Scenario: Milestones are ordered
+- **WHEN** a developer reads `docs/roadmap.md`
+- **THEN** Milestone sections appear in increasing numerical order (e.g. 4, 5, 6)
+
+### Requirement: Troubleshooting Documentation
+The repository SHALL include `docs/troubleshooting.md` covering common failures and remedies for building/loading/importing artifacts.
+
+#### Scenario: Ambiguous artifacts mention already-loaded version behavior
+- **WHEN** a developer reads the `AmbiguousArtifactError` section in `docs/troubleshooting.md`
+- **THEN** it explains that ambiguity applies when the module is not already loaded
+- **AND THEN** it notes that `import_(..., version=None)` follows the already-loaded version within a process
+
+#### Scenario: Network/proxy failures mention GOPROXY remediation
+- **WHEN** a developer reads the build-related troubleshooting for Go module download failures
+- **THEN** it mentions proxy/network errors can be transient
+- **AND THEN** it includes a remediation hint mentioning `GOPROXY=direct`
+
+### Requirement: Roadmap Avoids Misleading Internal Version Numbers
+The repository SHALL keep `docs/roadmap.md` version-agnostic for unreleased work and MUST NOT assign misleading internal version ranges to future milestones.
+
+#### Scenario: Roadmap does not claim internal version ranges
+- **WHEN** a developer reads `docs/roadmap.md`
+- **THEN** future milestones do not include internal version ranges like `v0.X - v0.Y`
+
+### Requirement: CLI Supports Artifact Cache Management
+The CLI SHALL accept `@version` syntax when targeting a specific module/package version for artifact cache operations.
+
+#### Scenario: Delete a specific cached version
+- **WHEN** a user runs `usegolib artifact rm --module <module-or-package>@<vX.Y.Z> --yes`
+- **THEN** the matching artifact directory for the current platform is deleted
+
+#### Scenario: Rebuild cached artifacts
+- **WHEN** a user runs `usegolib artifact rebuild --module <module-or-package>@<vX.Y.Z>`
+- **THEN** the artifact is rebuilt into the selected artifact root
+
+### Requirement: CLI Can Re-Download Go Modules Before Rebuild
+The CLI SHALL accept `@version` syntax for remote module builds when re-downloading sources.
+
+#### Scenario: Re-download before build
+- **WHEN** a user runs `usegolib build --module <module-or-package>@<vX.Y.Z> --out <dir> --redownload`
+- **THEN** the build uses an isolated `GOMODCACHE` and clears that cache before building
+
+### Requirement: CLI Usage Documentation
+The repository SHALL document CLI installation and usage, including artifact cache deletion and rebuild workflows.
+
+#### Scenario: CLI docs exist
+- **WHEN** a user reads the repository documentation
+- **THEN** `docs/cli.md` exists and documents `usegolib build` and `usegolib artifact` commands
+
+### Requirement: Windows Builder Output Decoding Is Locale-Safe
+The builder SHALL not fail with `UnicodeDecodeError` on Windows due to non-UTF8 locale encodings when capturing Go tool output.
+
+#### Scenario: Go tool output contains non-UTF8 bytes under Windows locale
+- **WHEN** the builder captures stdout/stderr from Go tools on Windows
+- **AND WHEN** the system locale encoding cannot decode those bytes (for example `cp950`)
+- **THEN** the build/scan process does not crash with `UnicodeDecodeError`
+- **AND THEN** errors are reported as `BuildError` when the underlying Go command fails
+

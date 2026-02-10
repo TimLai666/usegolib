@@ -5,7 +5,13 @@ Define the end-to-end behavior of `usegolib`: importing Go modules/packages from
 ### Requirement: Python Import API
 The system SHALL expose a Python API that imports a Go module or subpackage and returns a handle that can be used to call exported Go identifiers.
 
-#### Scenario: Import root module from an artifact root
+#### Scenario: Import root module from the default artifact root
+- **WHEN** Python calls `usegolib.import_("example.com/mod", version=None)`
+- **THEN** the system searches the default artifact root for a matching artifact for the current OS/arch
+- **AND THEN** the system loads the matching shared library into the current Python process
+- **AND THEN** the call returns a handle bound to package `example.com/mod`
+
+#### Scenario: Import root module from an explicit artifact root
 - **WHEN** Python calls `usegolib.import_("example.com/mod", version=None, artifact_dir="out/")`
 - **THEN** the system searches `artifact_dir` for a matching artifact for the current OS/arch
 - **AND THEN** the system loads the matching shared library into the current Python process
@@ -20,9 +26,16 @@ The system SHALL expose a Python API that imports a Go module or subpackage and 
 - **WHEN** Python calls `usegolib.import_("example.com/mod", version="v1.2.3", artifact_dir="out/")`
 - **THEN** the system MUST load version `v1.2.3` for that module/package (if present)
 
+#### Scenario: Import omits version but follows already-loaded module version
+- **WHEN** Python imports `example.com/mod` at version `v1.2.0`
+- **AND WHEN** Python imports `example.com/mod/subpkg` with `version=None`
+- **THEN** the second import resolves to version `v1.2.0` (the already-loaded module version)
+- **AND THEN** the import does not fail with `AmbiguousArtifactError` even if multiple artifact versions exist on disk
+
 #### Scenario: Import fails when version is omitted but ambiguous
 - **WHEN** Python calls `usegolib.import_("example.com/mod", version=None, artifact_dir="out/")`
 - **AND WHEN** `artifact_dir` contains more than one version for `example.com/mod` for the current OS/arch
+- **AND WHEN** `example.com/mod` is not already loaded in the current Python process
 - **THEN** the import MUST fail
 - **AND THEN** the system SHALL raise `AmbiguousArtifactError`
 
@@ -80,7 +93,7 @@ When building artifacts from a Go import path, the system SHALL resolve a concre
 
 #### Scenario: Version omitted defaults to @latest for remote modules
 - **WHEN** `usegolib build` is invoked with a Go module import path and `version=None`
-- **THEN** the system resolves the version to `@latest`
+- **THEN** the system resolves the version query to `@latest`
 - **AND THEN** the manifest `version` field contains the resolved concrete version
 
 #### Scenario: Pinned version is used as-is for remote modules
@@ -95,11 +108,26 @@ When building artifacts from a Go import path, the system SHALL resolve a concre
 ### Requirement: Import Builds Missing Artifacts (Dev Mode)
 When `build_if_missing=True`, the system SHALL build a missing artifact into the artifact root and then load it.
 
+When `build_if_missing=None` (auto), the system SHALL:
+- build missing artifacts when `artifact_dir` is omitted (using the default artifact root)
+- NOT build missing artifacts when `artifact_dir` is explicitly provided
+
 #### Scenario: Import triggers build when artifact is missing
 - **WHEN** Python calls `usegolib.import_("example.com/mod", version="vX.Y.Z", artifact_dir="out/", build_if_missing=True)`
 - **AND WHEN** no matching artifact exists under `artifact_dir` for the current OS/arch
 - **THEN** the system builds the artifact into `artifact_dir`
 - **AND THEN** the system loads the newly built artifact and returns a handle
+
+#### Scenario: Import auto-builds when artifact_dir is omitted
+- **WHEN** Python calls `usegolib.import_("example.com/mod", version="vX.Y.Z", build_if_missing=None)`
+- **AND WHEN** no matching artifact exists under the default artifact root for the current OS/arch
+- **THEN** the system builds the artifact into the default artifact root
+- **AND THEN** the system loads the newly built artifact and returns a handle
+
+#### Scenario: Import does not build by default when artifact_dir is provided
+- **WHEN** Python calls `usegolib.import_("example.com/mod", version="vX.Y.Z", artifact_dir="out/", build_if_missing=None)`
+- **AND WHEN** no matching artifact exists under `artifact_dir` for the current OS/arch
+- **THEN** the call fails with `ArtifactNotFoundError`
 
 #### Scenario: Import does not rebuild when artifact exists
 - **WHEN** Python calls `usegolib.import_("example.com/mod", version="vX.Y.Z", artifact_dir="out/", build_if_missing=True)`
@@ -140,6 +168,32 @@ The system SHALL support passing and returning Level 2 values across the Python/
 #### Scenario: Returning map[string][]byte
 - **WHEN** a Go function returns `map[string][]byte`
 - **THEN** Python receives it as a dict mapping `str -> bytes`
+
+### Requirement: Support Type `any` (V0.x)
+The type bridge SHALL support Go `any` (`interface{}`) as a dynamic value that can carry any MessagePack-compatible value.
+
+Supported containers SHALL include at least:
+- `[]any`
+- `map[string]any`
+
+#### Scenario: Call symbol with any parameter
+- **WHEN** a callable symbol accepts an `any` parameter
+- **AND WHEN** Python passes a MessagePack-compatible value
+- **THEN** the call succeeds
+
+#### Scenario: Return any result
+- **WHEN** a callable symbol returns `any`
+- **THEN** Python receives the dynamic value
+
+### Requirement: Variadic Parameters (V0.x)
+The builder scanner SHALL detect variadic parameters and record them as `...T` in symbol signatures.
+
+When manifest schema is present, the runtime SHALL allow Python calls to pass variadic arguments naturally and SHALL pack them into the ABI form for encoding.
+
+#### Scenario: Call variadic function from Python
+- **WHEN** a callable symbol has a variadic parameter (`...T`)
+- **AND WHEN** Python passes multiple arguments for that parameter
+- **THEN** the runtime packs the arguments and the call succeeds
 
 ### Requirement: Export Scan Correctness (Build)
 When building artifacts, the system SHALL discover exported top-level functions and their parameter/return types from Go source in a way that is robust to valid Go syntax and formatting (including grouped parameters).
@@ -388,4 +442,132 @@ The builder MUST:
 #### Scenario: Unsafe archive paths are rejected
 - **WHEN** a Zig archive contains an unsafe path (absolute or path traversal)
 - **THEN** the builder SHALL raise `BuildError` and MUST NOT extract the unsafe entry
+
+### Requirement: Go Object Handles And Exported Methods (V0.x)
+The system SHALL support calling exported Go methods without serializing the receiver value on every call by using Go-side object handles.
+
+The runtime SHALL expose a Python API to:
+- create a Go-side object handle for a named struct type (`obj_new`)
+- call exported methods on that handle (`obj_call`)
+- free the handle (`obj_free`)
+
+#### Scenario: Create object handle and call method
+- **WHEN** Python creates a Go object handle for a named struct type
+- **AND WHEN** Python calls an exported method on the object handle
+- **THEN** the call succeeds and returns the method result
+
+#### Scenario: Freeing an object handle makes it unusable
+- **WHEN** Python frees a Go object handle
+- **AND WHEN** Python calls a method on the freed handle
+- **THEN** the call fails with an error
+
+### Requirement: Generic Function Instantiation (V0.x)
+The builder SHALL support exported top-level generic Go functions by generating concrete instantiations at build time for an explicit set of type arguments.
+
+The manifest schema SHALL record the mapping from:
+- generic function name + type arguments
+- to the concrete callable symbol name exported by the bridge
+
+The runtime SHALL provide a Python API to call a generic function instantiation by specifying the generic function name and type arguments.
+
+#### Scenario: Build instantiates a generic function and Python calls it
+- **WHEN** the builder is configured to instantiate an exported generic Go function with concrete type arguments
+- **AND WHEN** Python calls that instantiation through the runtime
+- **THEN** the call succeeds and returns the correct result
+
+#### Scenario: Calling a non-configured generic instantiation fails
+- **WHEN** Python requests a generic instantiation that is not present in the manifest schema
+- **THEN** the runtime fails with an error
+
+### Requirement: Missing Go Toolchain Hint (V0.x)
+When the system needs to build artifacts using the Go toolchain and the `go` executable cannot be found, the system SHALL raise a `BuildError` with an actionable hint.
+
+The hint SHOULD mention:
+- installing Go and ensuring `go` is on `PATH`
+- disabling auto-build via `build_if_missing=False` and using prebuilt artifacts/wheels
+
+#### Scenario: Import auto-build fails because `go` is missing
+- **WHEN** Python calls `usegolib.import_("example.com/mod", version="vX.Y.Z")`
+- **AND WHEN** the artifact is missing and auto-build is attempted
+- **AND WHEN** `go` is not available on `PATH`
+- **THEN** the call fails with `BuildError`
+- **AND THEN** the error message includes a hint to install Go or disable auto-build
+
+### Requirement: GoDoc To Python Docstrings (V0.x)
+When building an artifact, the system SHALL extract Go doc comments for exported functions and methods and include them in the artifact schema.
+
+When schema is present, the Python runtime SHALL attach docstrings to the dynamic callables it returns for exported functions and methods.
+
+If GoDoc is missing for a callable, the runtime SHOULD still attach a signature-based docstring (so `help()` is informative).
+
+Typed wrappers (`handle.typed()` and typed objects) SHALL preserve the docstrings of the underlying dynamic callables.
+
+The bindgen generator SHOULD emit these docs as Python docstrings in generated modules.
+
+#### Scenario: Runtime exposes GoDoc for a function
+- **WHEN** an artifact manifest schema includes `doc` for a symbol
+- **AND WHEN** the user imports the package and accesses the function
+- **THEN** the returned callable has `__doc__` containing the Go doc comment
+
+#### Scenario: Runtime provides signature docstring fallback
+- **WHEN** an artifact manifest schema includes a symbol signature but has no `doc`
+- **AND WHEN** the user accesses the callable
+- **THEN** the returned callable has a non-empty `__doc__` containing a Go signature string
+
+#### Scenario: Typed wrappers preserve docstrings
+- **WHEN** a user accesses a callable via `handle.typed()`
+- **THEN** the typed callable has the same `__doc__` content as the untyped callable
+
+#### Scenario: Bindgen includes docstrings
+- **WHEN** an artifact manifest schema includes `doc` for a symbol
+- **AND WHEN** the user runs `usegolib bindgen`
+- **THEN** the generated Python method includes a docstring derived from the Go doc comment
+
+### Requirement: Opaque Pointer Results Use Object Handles (V0.x)
+When a callable symbol or method returns `*T` and the struct type `T` has no exported fields in the manifest schema, the system SHALL represent that value as an object handle rather than a record-struct dict.
+
+#### Scenario: Function returns *Opaque handle
+- **WHEN** a Go function returns `*T`
+- **AND WHEN** `T` has no exported fields
+- **THEN** Python receives a `GoObject` that can be used to call exported methods on `T`
+
+### Requirement: Error-Only Results Are Treated As Nil On Success
+When a callable symbol or method returns only `error`, the system SHALL represent successful results as `nil` (Python `None`).
+
+If the returned `error` is non-nil, the system SHALL report the failure via the ABI error envelope as `GoError`.
+
+#### Scenario: Method returns only error and succeeds
+- **WHEN** a Go method returns `error`
+- **AND WHEN** the call succeeds (`error` is `nil`)
+- **THEN** the Python result is `None`
+
+#### Scenario: Method returns only error and fails
+- **WHEN** a Go method returns `error`
+- **AND WHEN** the call fails (`error` is non-nil)
+- **THEN** the Python call raises `GoError`
+
+### Requirement: Builder Retries Transient Go Network Failures
+When building or rebuilding artifacts for remote modules, the builder SHALL retry transient Go module download failures and provide actionable remediation hints.
+
+#### Scenario: Transient proxy failures are retried and may fall back to GOPROXY=direct
+- **WHEN** a build executes Go commands that may download modules (for example `go mod download`, `go list`, or `go build`)
+- **AND WHEN** the command fails due to a transient network/proxy error (for example `proxy.golang.org` timeouts)
+- **THEN** the builder retries the command with a short backoff
+- **AND THEN** if `GOPROXY` is not explicitly set, the builder MAY retry with `GOPROXY=direct`
+
+#### Scenario: Failures include a hint for common network/proxy remediation
+- **WHEN** a build fails due to a network/proxy error downloading Go modules
+- **THEN** the builder raises `BuildError`
+- **AND THEN** the error message includes a hint mentioning `GOPROXY=direct`
+
+### Requirement: Exported Package Variables Are Accessible For Method Calls
+The runtime SHALL allow accessing exported Go package variables as Python attributes when they are used as "namespace" objects to call exported methods (common in Go fluent APIs).
+
+#### Scenario: Access exported package variable and call exported method
+- **GIVEN** a Go package defines an exported package variable `DL` of a (possibly unexported) struct type
+- **AND GIVEN** that type defines an exported method `Of(...any) *dl` (or similar)
+- **WHEN** Python evaluates `pkg.DL.Of(1, 2, 3)`
+- **THEN** the runtime resolves `pkg.DL` as an object handle bound to that variable
+- **AND THEN** the runtime calls method `Of` on that object handle
+- **AND THEN** if the result is a pointer to an opaque struct type, the result is represented in Python as a callable object handle (not a dict)
 

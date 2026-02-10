@@ -20,6 +20,8 @@ def _split_prefix(t: str) -> tuple[str, str]:
     t = t.strip()
     if t.startswith("*"):
         return "*", t[1:].strip()
+    if t.startswith("..."):
+        return "...", t[3:].strip()
     if t.startswith("[]"):
         return "[]", t[2:].strip()
     if t.startswith("map[string]"):
@@ -60,6 +62,15 @@ class Schema:
     # pkg -> structName -> schema
     structs_by_pkg: dict[str, dict[str, StructSchema]]
     symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]]
+    symbol_docs_by_pkg: dict[str, dict[str, str]]
+    # pkg -> recvType -> methodName -> (params, results)
+    methods_by_pkg: dict[str, dict[str, dict[str, tuple[list[str], list[str]]]]]
+    method_docs_by_pkg: dict[str, dict[str, dict[str, str]]]
+    # pkg -> genericName -> typeArgsTuple -> concreteSymbolName
+    generics_by_pkg: dict[str, dict[str, dict[tuple[str, ...], str]]]
+    generic_docs_by_pkg: dict[str, dict[str, str]]
+    vars_by_pkg: dict[str, dict[str, str]]
+    var_docs_by_pkg: dict[str, dict[str, str]]
 
     @classmethod
     def from_manifest(cls, manifest_schema: dict[str, Any] | None) -> "Schema | None":
@@ -77,6 +88,12 @@ class Schema:
                         continue
                     key_to_name: dict[str, str] = {}
                     fields_by_name: dict[str, tuple[str, bool]] = {}
+                    if not fields:
+                        # Allow empty struct schemas to represent "opaque" structs that
+                        # have no exported fields. This prevents runtime validation from
+                        # failing with "unknown type" for fluent APIs that return `*T`.
+                        pkg_out[name] = StructSchema(key_to_name={}, fields_by_name={})
+                        continue
                     for f in fields:
                         if not isinstance(f, dict):
                             continue
@@ -118,13 +135,12 @@ class Schema:
                             key_to_name[k] = fn
 
                     if key_to_name and fields_by_name:
-                        pkg_out[name] = StructSchema(
-                            key_to_name=key_to_name, fields_by_name=fields_by_name
-                        )
+                        pkg_out[name] = StructSchema(key_to_name=key_to_name, fields_by_name=fields_by_name)
                 if pkg_out:
                     structs[pkg] = pkg_out
 
         symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]] = {}
+        symbol_docs_by_pkg: dict[str, dict[str, str]] = {}
         raw_symbols = manifest_schema.get("symbols")
         if isinstance(raw_symbols, list):
             for s in raw_symbols:
@@ -134,6 +150,7 @@ class Schema:
                 name = s.get("name")
                 params = s.get("params")
                 results = s.get("results")
+                doc = s.get("doc")
                 if not isinstance(pkg, str) or not isinstance(name, str):
                     continue
                 if not isinstance(params, list) or not isinstance(results, list):
@@ -143,8 +160,98 @@ class Schema:
                 ):
                     continue
                 symbols_by_pkg.setdefault(pkg, {})[name] = (list(params), list(results))
+                if isinstance(doc, str) and doc.strip():
+                    symbol_docs_by_pkg.setdefault(pkg, {})[name] = doc.strip()
 
-        return cls(structs_by_pkg=structs, symbols_by_pkg=symbols_by_pkg)
+        methods_by_pkg: dict[str, dict[str, dict[str, tuple[list[str], list[str]]]]] = {}
+        method_docs_by_pkg: dict[str, dict[str, dict[str, str]]] = {}
+        raw_methods = manifest_schema.get("methods")
+        if isinstance(raw_methods, list):
+            for m in raw_methods:
+                if not isinstance(m, dict):
+                    continue
+                pkg = m.get("pkg")
+                recv = m.get("recv")
+                name = m.get("name")
+                params = m.get("params")
+                results = m.get("results")
+                doc = m.get("doc")
+                if not (isinstance(pkg, str) and isinstance(recv, str) and isinstance(name, str)):
+                    continue
+                if not isinstance(params, list) or not isinstance(results, list):
+                    continue
+                if not all(isinstance(x, str) for x in params) or not all(
+                    isinstance(x, str) for x in results
+                ):
+                    continue
+                methods_by_pkg.setdefault(pkg, {}).setdefault(recv, {})[name] = (
+                    list(params),
+                    list(results),
+                )
+                if isinstance(doc, str) and doc.strip():
+                    method_docs_by_pkg.setdefault(pkg, {}).setdefault(recv, {})[name] = doc.strip()
+
+        generics_by_pkg: dict[str, dict[str, dict[tuple[str, ...], str]]] = {}
+        generic_docs_by_pkg: dict[str, dict[str, str]] = {}
+        raw_generics = manifest_schema.get("generics")
+        if isinstance(raw_generics, list):
+            for g in raw_generics:
+                if not isinstance(g, dict):
+                    continue
+                pkg = g.get("pkg")
+                name = g.get("name")
+                type_args = g.get("type_args")
+                symbol = g.get("symbol")
+                doc = g.get("doc")
+                if not (isinstance(pkg, str) and isinstance(name, str) and isinstance(symbol, str)):
+                    continue
+                if not isinstance(type_args, list) or not all(isinstance(x, str) for x in type_args):
+                    continue
+                generics_by_pkg.setdefault(pkg, {}).setdefault(name, {})[tuple(type_args)] = symbol
+                if isinstance(doc, str) and doc.strip():
+                    generic_docs_by_pkg.setdefault(pkg, {})[name] = doc.strip()
+
+        vars_by_pkg: dict[str, dict[str, str]] = {}
+        var_docs_by_pkg: dict[str, dict[str, str]] = {}
+        raw_vars = manifest_schema.get("vars")
+        if isinstance(raw_vars, list):
+            for v in raw_vars:
+                if not isinstance(v, dict):
+                    continue
+                pkg = v.get("pkg")
+                name = v.get("name")
+                typ = v.get("type")
+                doc = v.get("doc")
+                if not (isinstance(pkg, str) and isinstance(name, str) and isinstance(typ, str)):
+                    continue
+                if not pkg or not name or not typ:
+                    continue
+                base = typ.strip()
+                if base.startswith("*"):
+                    base = base[1:].strip()
+                if base:
+                    vars_by_pkg.setdefault(pkg, {})[name] = base
+                if isinstance(doc, str) and doc.strip():
+                    var_docs_by_pkg.setdefault(pkg, {})[name] = doc.strip()
+
+        return cls(
+            structs_by_pkg=structs,
+            symbols_by_pkg=symbols_by_pkg,
+            symbol_docs_by_pkg=symbol_docs_by_pkg,
+            methods_by_pkg=methods_by_pkg,
+            method_docs_by_pkg=method_docs_by_pkg,
+            generics_by_pkg=generics_by_pkg,
+            generic_docs_by_pkg=generic_docs_by_pkg,
+            vars_by_pkg=vars_by_pkg,
+            var_docs_by_pkg=var_docs_by_pkg,
+        )
+
+
+def validate_struct_value(*, schema: Schema, pkg: str, struct: str, value: Any) -> None:
+    try:
+        _validate_value(schema=schema, pkg=pkg, t=struct, v=value)
+    except UnsupportedTypeError as e:
+        raise UnsupportedTypeError(f"schema: {struct}: {e}") from None
 
 
 def validate_call_args(*, schema: Schema, pkg: str, fn: str, args: list[Any]) -> None:
@@ -178,8 +285,51 @@ def validate_call_result(*, schema: Schema, pkg: str, fn: str, result: Any) -> N
         raise UnsupportedTypeError(f"schema: result ({t0}): {e}") from None
 
 
+def validate_method_args(
+    *, schema: Schema, pkg: str, recv: str, method: str, args: list[Any]
+) -> None:
+    sig = schema.methods_by_pkg.get(pkg, {}).get(recv, {}).get(method)
+    if sig is None:
+        return
+    params, _results = sig
+    if len(args) != len(params):
+        raise UnsupportedTypeError(f"schema: wrong arity (expected {len(params)}, got {len(args)})")
+    for i, (t, v) in enumerate(zip(params, args, strict=True)):
+        try:
+            _validate_value(schema=schema, pkg=pkg, t=t, v=v)
+        except UnsupportedTypeError as e:
+            raise UnsupportedTypeError(f"schema: arg{i} ({t}): {e}") from None
+
+
+def validate_method_result(
+    *, schema: Schema, pkg: str, recv: str, method: str, result: Any
+) -> None:
+    sig = schema.methods_by_pkg.get(pkg, {}).get(recv, {}).get(method)
+    if sig is None:
+        return
+    _params, results = sig
+    if not results:
+        if result is not None:
+            raise UnsupportedTypeError("schema: expected nil result")
+        return
+    t0 = results[0]
+    try:
+        _validate_value(schema=schema, pkg=pkg, t=t0, v=result)
+    except UnsupportedTypeError as e:
+        raise UnsupportedTypeError(f"schema: result ({t0}): {e}") from None
+
+
 def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
     t = t.strip()
+
+    if t == "any":
+        return
+    if t == "error":
+        # For v0 we represent successful `error` results as nil. Non-nil errors
+        # are reported via the ABI error envelope instead of as values.
+        if v is not None:
+            raise UnsupportedTypeError("expected nil")
+        return
 
     # Special-case `[]byte`: represented as bytes, not list[int].
     if t == "[]byte":
@@ -205,7 +355,22 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
     if t.startswith("*"):
         if v is None:
             return
-        _validate_value(schema=schema, pkg=pkg, t=t[1:].strip(), v=v)
+        inner = t[1:].strip()
+        # Opaque pointer handles: if the pointed-to struct exists in schema but has
+        # no exported fields, allow passing/returning a uint64-ish object id (int).
+        st = schema.structs_by_pkg.get(pkg, {}).get(inner)
+        if st is not None and not st.fields_by_name:
+            if isinstance(v, int) and not isinstance(v, bool):
+                return
+        _validate_value(schema=schema, pkg=pkg, t=inner, v=v)
+        return
+
+    if t.startswith("..."):
+        if not isinstance(v, (list, tuple)):
+            raise UnsupportedTypeError("expected list")
+        inner = t[3:].strip()
+        for item in v:
+            _validate_value(schema=schema, pkg=pkg, t=inner, v=item)
         return
 
     if t.startswith("[]"):

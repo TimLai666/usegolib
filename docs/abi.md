@@ -23,7 +23,10 @@ The ABI is intentionally small: the wire format carries only generic MessagePack
 All requests are MessagePack maps:
 
 - `abi`: integer ABI version (v0 == `0`)
-- `op`: operation name (v0 supports only `call`)
+- `op`: operation name (v0 supports: `call`, `obj_new`, `obj_call`, `obj_free`)
+
+### `op = "call"`
+
 - `pkg`: Go package import path (string)
 - `fn`: exported function name (string)
 - `args`: list of arguments (see Type Bridge below)
@@ -37,6 +40,66 @@ Example (conceptual):
   "pkg": "example.com/mod",
   "fn": "AddInt",
   "args": [1, 2]
+}
+```
+
+### `op = "obj_new"`
+
+Create a Go-side object instance and return an opaque id.
+
+- `pkg`: Go package import path (string)
+- `type`: receiver struct type name (string, exported; no leading `*`)
+- `init`: optional record-struct value used to initialize the struct (Level 3); if omitted, the zero value is used
+
+Example (conceptual):
+
+```text
+{
+  "abi": 0,
+  "op": "obj_new",
+  "pkg": "example.com/mod",
+  "type": "Counter",
+  "init": {"n": 1}
+}
+```
+
+### `op = "obj_call"`
+
+Call a method on a previously created object.
+
+- `pkg`: Go package import path (string)
+- `type`: receiver struct type name (string, exported; no leading `*`)
+- `id`: object id returned by `obj_new`
+- `method`: exported method name (string)
+- `args`: list of arguments (see Type Bridge below)
+
+Example (conceptual):
+
+```text
+{
+  "abi": 0,
+  "op": "obj_call",
+  "pkg": "example.com/mod",
+  "type": "Counter",
+  "id": 1,
+  "method": "Inc",
+  "args": [2]
+}
+```
+
+### `op = "obj_free"`
+
+Free a Go-side object id.
+
+- `id`: object id returned by `obj_new`
+
+Example (conceptual):
+
+```text
+{
+  "abi": 0,
+  "op": "obj_free",
+  "id": 1
 }
 ```
 
@@ -68,6 +131,9 @@ Supported values crossing the ABI:
   - `string`
   - `bytes`
   - slices/lists of supported values (including lists of bytes)
+- `any`:
+  - `any` is represented on the wire as a plain MessagePack value (no extra envelope)
+  - `[]any` and `map[string]any` are supported recursively
 - Level 2:
   - `map[string]T` where `T` is a Level 1 scalar or a slice of Level 1 scalars
   - Encoded as a MessagePack map from string keys to values
@@ -76,6 +142,19 @@ Supported values crossing the ABI:
   - Field values are limited to Level 1/2 and record structs recursively
 
 Unsupported values MUST fail with `UnsupportedTypeError`.
+
+### Variadic Parameters (`...T`)
+
+Go variadic parameters (`...T`) are represented in the ABI as a single final argument whose value is a list.
+
+Examples:
+- Go: `Append(values ...any)`
+  - Python: `obj.Append(1, 2, 3)` sends `args = [[1, 2, 3]]`
+  - Python: `obj.Append()` sends `args = [[]]`
+- Go: `Data(useNamesAsKeys ...bool)`
+  - Python: `dt.Data(True)` sends `args = [[True]]`
+
+When manifest schema is present, the Python runtime packs varargs automatically.
 
 ### Canonical Keys (Tags)
 
@@ -102,6 +181,7 @@ These are interpreted using the manifest schema; on the wire they are just strin
 
 Artifacts embed a schema in `manifest.json` describing:
 - callable symbols and their parameter/return types
+- callable methods (receiver type + method name) and their parameter/return types
 - named struct types and their fields (including keys, aliases, required/omitempty)
 
 When schema is present, the runtime validates call arguments and successful results against the schema

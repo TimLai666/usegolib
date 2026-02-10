@@ -1,15 +1,48 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from ..errors import BuildError
-from .symbols import ExportedFunc, ModuleScan, StructField
+from .symbols import ExportedFunc, ExportedMethod, ExportedVar, GenericFuncDef, ModuleScan, StructField
 
 
-def scan_module(*, module_dir: Path) -> ModuleScan:
+_GO_TRANSIENT_NET_RE = re.compile(
+    r"("
+    r"proxy\.golang\.org"
+    r"|sum\.golang\.org"
+    r"|wsarecv"
+    r"|connection (?:attempt failed|reset)"
+    r"|i/o timeout"
+    r"|tls handshake timeout"
+    r"|unexpected eof"
+    r"|temporary failure"
+    r"|no such host"
+    r"|502 bad gateway"
+    r"|503 service unavailable"
+    r"|504 gateway timeout"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _go_network_hint(out: str) -> str | None:
+    if not _GO_TRANSIENT_NET_RE.search(out):
+        return None
+    return (
+        "\n\nHint: Go module download failed due to a network/proxy error. "
+        "Try re-running the command. If `proxy.golang.org` is blocked/unreliable "
+        "in your environment, try setting `GOPROXY=direct` (or another reachable proxy) "
+        "and retry."
+    )
+
+
+def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> ModuleScan:
     """Scan exported top-level functions by parsing Go source (not `go doc` text).
 
     This is used by the builder to decide which functions are callable through the
@@ -32,21 +65,78 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
         )
         (scan_dir / "main.go").write_text(_scanner_go_source(), encoding="utf-8")
 
-        proc = subprocess.run(
-            ["go", "run", ".", "--module-dir", str(module_dir)],
-            cwd=str(scan_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise BuildError(f"go scan failed\n{proc.stdout}")
+        proc = None
+        out = ""
+        max_attempts = 3
+        backoff_s = 0.5
+        base_env = env
+        cur_env = env
+        try:
+            for attempt in range(max_attempts):
+                proc = subprocess.run(
+                    ["go", "run", ".", "--module-dir", str(module_dir)],
+                    cwd=str(scan_dir),
+                    env=cur_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=False,
+                    check=False,
+                )
+                out = (proc.stdout or b"").decode("utf-8", errors="replace")
+                if proc.returncode == 0:
+                    break
+
+                if attempt < max_attempts - 1 and _GO_TRANSIENT_NET_RE.search(out):
+                    if "proxy.golang.org" in out.lower():
+                        if base_env is None:
+                            next_env = dict(os.environ)
+                        else:
+                            next_env = dict(base_env)
+                        if "GOPROXY" not in next_env:
+                            next_env["GOPROXY"] = "direct"
+                            cur_env = next_env
+                    time.sleep(backoff_s)
+                    backoff_s *= 2.0
+                    continue
+                break
+        except FileNotFoundError as e:
+            raise BuildError(
+                "Go toolchain not found (`go` is missing from PATH). "
+                "Install Go and ensure `go` is available on PATH. "
+                "If you do not want auto-build on import, pass `build_if_missing=False` "
+                "(and use prebuilt artifacts/wheels)."
+            ) from e
+        if proc is None or proc.returncode != 0:
+            hint = _go_network_hint(out)
+            if hint:
+                out = out.rstrip("\n") + hint + "\n"
+            raise BuildError(f"go scan failed\n{out}")
 
         try:
-            obj = json.loads(proc.stdout)
+            try:
+                obj = json.loads(out)
+            except Exception:
+                # Best-effort: some Go toolchains print non-JSON lines (e.g. toolchain
+                # switching messages) that get merged into stdout. Extract the first
+                # JSON object and retry.
+                start = out.find("{")
+                if start == -1:
+                    raise
+                depth = 0
+                end = -1
+                for i, ch in enumerate(out[start:], start=start):
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                if end == -1:
+                    raise
+                obj = json.loads(out[start:end])
         except Exception as e:  # noqa: BLE001
-            raise BuildError(f"failed to parse go scan output: {e}\n{proc.stdout}") from e
+            raise BuildError(f"failed to parse go scan output: {e}\n{out}") from e
 
         funcs: list[ExportedFunc] = []
         for item in obj.get("funcs", []):
@@ -56,6 +146,7 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
             name = item.get("name")
             params = item.get("params")
             results = item.get("results")
+            doc = item.get("doc")
             if not isinstance(pkg, str) or not isinstance(name, str):
                 continue
             if not isinstance(params, list) or not isinstance(results, list):
@@ -64,7 +155,99 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                 continue
             if not all(isinstance(t, str) for t in results):
                 continue
-            funcs.append(ExportedFunc(pkg=pkg, name=name, params=list(params), results=list(results)))
+            doc_str: str | None = None
+            if isinstance(doc, str):
+                doc_str = doc.strip() or None
+            funcs.append(
+                ExportedFunc(
+                    pkg=pkg,
+                    name=name,
+                    params=list(params),
+                    results=list(results),
+                    doc=doc_str,
+                )
+            )
+
+        methods: list[ExportedMethod] = []
+        for item in obj.get("methods", []):
+            if not isinstance(item, dict):
+                continue
+            pkg = item.get("pkg")
+            recv = item.get("recv")
+            name = item.get("name")
+            params = item.get("params")
+            results = item.get("results")
+            doc = item.get("doc")
+            if not (isinstance(pkg, str) and isinstance(recv, str) and isinstance(name, str)):
+                continue
+            if not isinstance(params, list) or not isinstance(results, list):
+                continue
+            if not all(isinstance(t, str) for t in params):
+                continue
+            if not all(isinstance(t, str) for t in results):
+                continue
+            methods.append(
+                ExportedMethod(
+                    pkg=pkg,
+                    recv=recv,
+                    name=name,
+                    params=list(params),
+                    results=list(results),
+                    doc=(doc.strip() or None) if isinstance(doc, str) else None,
+                )
+            )
+
+        vars_: list[ExportedVar] = []
+        for item in obj.get("vars", []):
+            if not isinstance(item, dict):
+                continue
+            pkg = item.get("pkg")
+            name = item.get("name")
+            typ = item.get("type")
+            doc = item.get("doc")
+            if not (isinstance(pkg, str) and isinstance(name, str) and isinstance(typ, str)):
+                continue
+            if not pkg or not name or not typ:
+                continue
+            vars_.append(
+                ExportedVar(
+                    pkg=pkg,
+                    name=name,
+                    type=typ,
+                    doc=(doc.strip() or None) if isinstance(doc, str) else None,
+                )
+            )
+
+        generic_funcs: list[GenericFuncDef] = []
+        for item in obj.get("generic_funcs", []):
+            if not isinstance(item, dict):
+                continue
+            pkg = item.get("pkg")
+            name = item.get("name")
+            type_params = item.get("type_params")
+            params = item.get("params")
+            results = item.get("results")
+            doc = item.get("doc")
+            if not (isinstance(pkg, str) and isinstance(name, str)):
+                continue
+            if not isinstance(type_params, list) or not all(isinstance(x, str) for x in type_params):
+                continue
+            if not isinstance(params, list) or not isinstance(results, list):
+                continue
+            if not all(isinstance(t, str) for t in params):
+                continue
+            if not all(isinstance(t, str) for t in results):
+                continue
+            generic_funcs.append(
+                GenericFuncDef(
+                    pkg=pkg,
+                    name=name,
+                    type_params=list(type_params),
+                    params=list(params),
+                    results=list(results),
+                    doc=(doc.strip() or None) if isinstance(doc, str) else None,
+                )
+            )
 
         struct_types_by_pkg: dict[str, set[str]] = {}
         st = obj.get("struct_types")
@@ -123,13 +306,16 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
 
         return ModuleScan(
             funcs=funcs,
+            methods=methods,
+            generic_funcs=generic_funcs,
+            vars=vars_,
             struct_types_by_pkg=struct_types_by_pkg,
             structs_by_pkg=structs_by_pkg,
         )
 
 
-def scan_exported_funcs(*, module_dir: Path) -> list[ExportedFunc]:
-    return scan_module(module_dir=module_dir).funcs
+def scan_exported_funcs(*, module_dir: Path, env: dict[str, str] | None = None) -> list[ExportedFunc]:
+    return scan_module(module_dir=module_dir, env=env).funcs
 
 
 def _scanner_go_source() -> str:
@@ -167,13 +353,42 @@ type outFunc struct {
 	Name    string   `json:"name"`
 	Params  []string `json:"params"`
 	Results []string `json:"results"`
+	Doc     string   `json:"doc"`
 }
 
-type outObj struct {
-	Funcs []outFunc `json:"funcs"`
-	StructTypes map[string][]string `json:"struct_types"`
-	Structs map[string][]outStruct `json:"structs"`
-}
+ type outMethod struct {
+ 	Pkg     string   `json:"pkg"`
+ 	Recv    string   `json:"recv"`
+ 	Name    string   `json:"name"`
+ 	Params  []string `json:"params"`
+ 	Results []string `json:"results"`
+ 	Doc     string   `json:"doc"`
+ }
+
+ type outVar struct {
+ 	Pkg  string `json:"pkg"`
+ 	Name string `json:"name"`
+ 	Type string `json:"type"`
+ 	Doc  string `json:"doc"`
+ }
+
+ type outGenericFunc struct {
+ 	Pkg        string   `json:"pkg"`
+ 	Name       string   `json:"name"`
+ 	TypeParams []string `json:"type_params"`
+ 	Params     []string `json:"params"`
+ 	Results    []string `json:"results"`
+ 	Doc        string   `json:"doc"`
+ }
+
+ type outObj struct {
+ 	Funcs []outFunc `json:"funcs"`
+ 	Methods []outMethod `json:"methods"`
+ 	GenericFuncs []outGenericFunc `json:"generic_funcs"`
+ 	Vars []outVar `json:"vars"`
+ 	StructTypes map[string][]string `json:"struct_types"`
+ 	Structs map[string][]outStruct `json:"structs"`
+ }
 
 type outStructField struct {
 	Name string `json:"name"`
@@ -210,12 +425,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	out := outObj{
-		Funcs:       make([]outFunc, 0, 128),
-		StructTypes: map[string][]string{},
-		Structs:     map[string][]outStruct{},
-	}
-	for _, p := range pkgs {
+ 	out := outObj{
+ 		Funcs:       make([]outFunc, 0, 128),
+ 		Methods:     make([]outMethod, 0, 128),
+ 		GenericFuncs: make([]outGenericFunc, 0, 128),
+ 		Vars:        make([]outVar, 0, 128),
+ 		StructTypes: map[string][]string{},
+ 		Structs:     map[string][]outStruct{},
+ 	}
+ 	for _, p := range pkgs {
 		if isInternalPkg(p.ImportPath) {
 			continue
 		}
@@ -233,30 +451,107 @@ func main() {
 		structNames := map[string]bool{}
 		structFields := map[string][]outStructField{}
 		for _, file := range files {
-			af, err := parser.ParseFile(fs, file, nil, 0)
+			af, err := parser.ParseFile(fs, file, nil, parser.ParseComments)
 			if err != nil {
 				continue
 			}
 			im := fileImports(af)
 			collectStructTypes(af, im, structNames, structFields)
-			for _, decl := range af.Decls {
-				fd, ok := decl.(*ast.FuncDecl)
-				if !ok {
-					continue
-				}
-				if fd.Recv != nil {
-					continue
-				}
+ 			for _, decl := range af.Decls {
+ 				// Exported package-level vars (namespace-style singletons).
+ 				gd, ok := decl.(*ast.GenDecl)
+ 				if ok && gd.Tok == token.VAR {
+ 					for _, spec := range gd.Specs {
+ 						vs, ok := spec.(*ast.ValueSpec)
+ 						if !ok || vs == nil || len(vs.Names) == 0 {
+ 							continue
+ 						}
+ 						typ := ""
+ 						if vs.Type != nil {
+ 							typ = renderType(vs.Type, im)
+ 						} else if len(vs.Values) == 1 && vs.Values[0] != nil {
+ 							switch vv := vs.Values[0].(type) {
+ 							case *ast.CompositeLit:
+ 								typ = renderType(vv.Type, im)
+ 							case *ast.UnaryExpr:
+ 								if vv.Op == token.AND {
+ 									if cl, ok := vv.X.(*ast.CompositeLit); ok {
+ 										inner := renderType(cl.Type, im)
+ 										if inner != "" {
+ 											typ = "*" + inner
+ 										}
+ 									}
+ 								}
+ 							}
+ 						}
+ 						if typ == "" {
+ 							continue
+ 						}
+ 						doc := ""
+ 						if vs.Doc != nil {
+ 							doc = docText(vs.Doc)
+ 						} else if gd.Doc != nil {
+ 							doc = docText(gd.Doc)
+ 						}
+ 						for _, nm := range vs.Names {
+ 							if nm == nil || !nm.IsExported() {
+ 								continue
+ 							}
+ 							out.Vars = append(out.Vars, outVar{
+ 								Pkg:  p.ImportPath,
+ 								Name: nm.Name,
+ 								Type: typ,
+ 								Doc:  doc,
+ 							})
+ 						}
+ 					}
+ 					continue
+ 				}
+
+ 				fd, ok := decl.(*ast.FuncDecl)
+ 				if !ok {
+ 					continue
+ 				}
 				if fd.Name == nil || !fd.Name.IsExported() {
 					continue
 				}
-				// Skip generic functions for v0.
-				if fd.Type != nil && fd.Type.TypeParams != nil && len(fd.Type.TypeParams.List) > 0 {
+				// Exported generic functions are reported separately.
+				if fd.Recv == nil && fd.Type != nil && fd.Type.TypeParams != nil && len(fd.Type.TypeParams.List) > 0 {
+					typeParams := []string{}
+					for _, tp := range fd.Type.TypeParams.List {
+						if tp == nil || len(tp.Names) == 0 {
+							continue
+						}
+						for _, nm := range tp.Names {
+							if nm == nil || nm.Name == "" {
+								continue
+							}
+							typeParams = append(typeParams, nm.Name)
+						}
+					}
+					if len(typeParams) == 0 {
+						continue
+					}
+					params := fieldListTypes(fd.Type.Params, im)
+					results := fieldListTypes(fd.Type.Results, im)
+					if params == nil || results == nil {
+						continue
+					}
+					out.GenericFuncs = append(out.GenericFuncs, outGenericFunc{
+						Pkg:        p.ImportPath,
+						Name:       fd.Name.Name,
+						TypeParams: typeParams,
+						Params:     params,
+						Results:    results,
+						Doc:        docText(fd.Doc),
+					})
 					continue
 				}
 
-				params := fieldListTypes(fd.Type.Params, im)
-				results := fieldListTypes(fd.Type.Results, im)
+				// Top-level function.
+				if fd.Recv == nil {
+					params := fieldListTypes(fd.Type.Params, im)
+					results := fieldListTypes(fd.Type.Results, im)
 				if params == nil || results == nil {
 					continue
 				}
@@ -266,6 +561,39 @@ func main() {
 					Name:    fd.Name.Name,
 					Params:  params,
 					Results: results,
+					Doc:     docText(fd.Doc),
+				})
+					continue
+				}
+
+				// Exported method on exported struct receiver type.
+				if fd.Recv.List == nil || len(fd.Recv.List) == 0 || fd.Recv.List[0] == nil || fd.Recv.List[0].Type == nil {
+					continue
+				}
+				rt := renderType(fd.Recv.List[0].Type, im)
+				if rt == "" {
+					continue
+				}
+ 				recv := strings.TrimPrefix(rt, "*")
+ 				if recv == "" {
+ 					continue
+ 				}
+ 				if !structNames[recv] {
+ 					continue
+ 				}
+
+				params := fieldListTypes(fd.Type.Params, im)
+				results := fieldListTypes(fd.Type.Results, im)
+				if params == nil || results == nil {
+					continue
+				}
+				out.Methods = append(out.Methods, outMethod{
+					Pkg:     p.ImportPath,
+					Recv:    recv,
+					Name:    fd.Name.Name,
+					Params:  params,
+					Results: results,
+					Doc:     docText(fd.Doc),
 				})
 			}
 		}
@@ -340,6 +668,13 @@ func fieldListTypes(fl *ast.FieldList, im map[string]string) []string {
 		}
 	}
 	return out
+}
+
+func docText(cg *ast.CommentGroup) string {
+	if cg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cg.Text())
 }
 
 func collectStructTypes(af *ast.File, im map[string]string, out map[string]bool, fieldsOut map[string][]outStructField) {
@@ -512,6 +847,12 @@ func renderType(e ast.Expr, im map[string]string) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		return t.Name
+	case *ast.Ellipsis:
+		inner := renderType(t.Elt, im)
+		if inner == "" {
+			return ""
+		}
+		return "..." + inner
 	case *ast.ArrayType:
 		if t.Len != nil {
 			return ""
