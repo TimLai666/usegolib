@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .schema import Schema, _parse_type
+from .schema import Schema, _parse_type, success_result_types
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,7 @@ def generate_python_bindings(*, schema: Schema, pkg: str, out_file: Path, opts: 
     lines.append("")
     lines.append("import usegolib")
     lines.append("import usegolib.typed")
+    lines.append("from usegolib.schema import success_result_types")
     lines.append("from usegolib.handle import PackageHandle")
     lines.append("")
 
@@ -144,19 +145,30 @@ def generate_python_bindings(*, schema: Schema, pkg: str, out_file: Path, opts: 
         lines.append("        if sig is None:")
         lines.append("            return r")
         lines.append("        _params, results = sig")
-        lines.append("        if not results:")
+        lines.append("        value_results = success_result_types(results)")
+        lines.append("        if not value_results:")
         lines.append("            return None")
+        lines.append("        if len(value_results) == 1:")
         lines.append(
-            "        return usegolib.typed.decode_value(types=self._types, go_type=results[0], v=r)"
+            "            return usegolib.typed.decode_value(types=self._types, go_type=value_results[0], v=r)"
         )
+        lines.append("        assert isinstance(r, (list, tuple))")
+        lines.append("        out: list[Any] = []")
+        lines.append("        for i, t in enumerate(value_results):")
+        lines.append(
+            "            out.append(usegolib.typed.decode_value(types=self._types, go_type=t, v=r[i]))"
+        )
+        lines.append("        return tuple(out)")
         lines.append("")
 
     for fn_name, (params, results) in symbols.items():
-        # (T, error) is represented as a single successful result.
-        ret_go = "nil"
-        if results:
-            ret_go = results[0]
-        ret_py = "None" if not results else _py_type_expr(schema=schema, pkg=pkg, go_type=ret_go)
+        value_results = success_result_types(results)
+        if not value_results:
+            ret_py = "None"
+        elif len(value_results) == 1:
+            ret_py = _py_type_expr(schema=schema, pkg=pkg, go_type=value_results[0])
+        else:
+            ret_py = "tuple[" + ", ".join(_py_type_expr(schema=schema, pkg=pkg, go_type=t) for t in value_results) + "]"
 
         arg_parts: list[str] = []
         call_args: list[str] = []
@@ -170,12 +182,20 @@ def generate_python_bindings(*, schema: Schema, pkg: str, out_file: Path, opts: 
         if doc:
             _emit_docstring(doc, indent="        ")
         lines.append(f"        r = self._h.{fn_name}({', '.join(call_args)})")
-        if results:
+        if not value_results:
+            lines.append("        return None")
+        elif len(value_results) == 1:
             lines.append(
-                f"        return usegolib.typed.decode_value(types=self._types, go_type={ret_go!r}, v=r)"
+                f"        return usegolib.typed.decode_value(types=self._types, go_type={value_results[0]!r}, v=r)"
             )
         else:
-            lines.append("        return None")
+            lines.append("        assert isinstance(r, (list, tuple))")
+            parts = []
+            for i, t in enumerate(value_results):
+                parts.append(
+                    f"usegolib.typed.decode_value(types=self._types, go_type={t!r}, v=r[{i}])"
+                )
+            lines.append(f"        return ({', '.join(parts)})")
         lines.append("")
 
     # load() helper

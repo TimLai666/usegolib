@@ -36,7 +36,13 @@ def test_bindgen_generates_importable_module(tmp_path: Path):
                     "name": "EchoPerson",
                     "params": ["Person"],
                     "results": ["Person"],
-                }
+                },
+                {
+                    "pkg": "example.com/p",
+                    "name": "Pair",
+                    "params": [],
+                    "results": ["int64", "string"],
+                },
             ],
         }
     )
@@ -52,3 +58,4 @@ def test_bindgen_generates_importable_module(tmp_path: Path):
     mod = _import_from_path(out)
     assert hasattr(mod, "Person")
     assert hasattr(mod, "API")
+    assert getattr(mod.API.Pair, "__annotations__", {}).get("return") == "tuple[int, str]"
