@@ -60,6 +60,8 @@ class Schema:
     # pkg -> structName -> schema
     structs_by_pkg: dict[str, dict[str, StructSchema]]
     symbols_by_pkg: dict[str, dict[str, tuple[list[str], list[str]]]]
+    # pkg -> recvType -> methodName -> (params, results)
+    methods_by_pkg: dict[str, dict[str, dict[str, tuple[list[str], list[str]]]]]
 
     @classmethod
     def from_manifest(cls, manifest_schema: dict[str, Any] | None) -> "Schema | None":
@@ -144,7 +146,38 @@ class Schema:
                     continue
                 symbols_by_pkg.setdefault(pkg, {})[name] = (list(params), list(results))
 
-        return cls(structs_by_pkg=structs, symbols_by_pkg=symbols_by_pkg)
+        methods_by_pkg: dict[str, dict[str, dict[str, tuple[list[str], list[str]]]]] = {}
+        raw_methods = manifest_schema.get("methods")
+        if isinstance(raw_methods, list):
+            for m in raw_methods:
+                if not isinstance(m, dict):
+                    continue
+                pkg = m.get("pkg")
+                recv = m.get("recv")
+                name = m.get("name")
+                params = m.get("params")
+                results = m.get("results")
+                if not (isinstance(pkg, str) and isinstance(recv, str) and isinstance(name, str)):
+                    continue
+                if not isinstance(params, list) or not isinstance(results, list):
+                    continue
+                if not all(isinstance(x, str) for x in params) or not all(
+                    isinstance(x, str) for x in results
+                ):
+                    continue
+                methods_by_pkg.setdefault(pkg, {}).setdefault(recv, {})[name] = (
+                    list(params),
+                    list(results),
+                )
+
+        return cls(structs_by_pkg=structs, symbols_by_pkg=symbols_by_pkg, methods_by_pkg=methods_by_pkg)
+
+
+def validate_struct_value(*, schema: Schema, pkg: str, struct: str, value: Any) -> None:
+    try:
+        _validate_value(schema=schema, pkg=pkg, t=struct, v=value)
+    except UnsupportedTypeError as e:
+        raise UnsupportedTypeError(f"schema: {struct}: {e}") from None
 
 
 def validate_call_args(*, schema: Schema, pkg: str, fn: str, args: list[Any]) -> None:
@@ -171,6 +204,40 @@ def validate_call_result(*, schema: Schema, pkg: str, fn: str, result: Any) -> N
             raise UnsupportedTypeError("schema: expected nil result")
         return
     # (T, error) is represented as a single successful result in the ABI.
+    t0 = results[0]
+    try:
+        _validate_value(schema=schema, pkg=pkg, t=t0, v=result)
+    except UnsupportedTypeError as e:
+        raise UnsupportedTypeError(f"schema: result ({t0}): {e}") from None
+
+
+def validate_method_args(
+    *, schema: Schema, pkg: str, recv: str, method: str, args: list[Any]
+) -> None:
+    sig = schema.methods_by_pkg.get(pkg, {}).get(recv, {}).get(method)
+    if sig is None:
+        return
+    params, _results = sig
+    if len(args) != len(params):
+        raise UnsupportedTypeError(f"schema: wrong arity (expected {len(params)}, got {len(args)})")
+    for i, (t, v) in enumerate(zip(params, args, strict=True)):
+        try:
+            _validate_value(schema=schema, pkg=pkg, t=t, v=v)
+        except UnsupportedTypeError as e:
+            raise UnsupportedTypeError(f"schema: arg{i} ({t}): {e}") from None
+
+
+def validate_method_result(
+    *, schema: Schema, pkg: str, recv: str, method: str, result: Any
+) -> None:
+    sig = schema.methods_by_pkg.get(pkg, {}).get(recv, {}).get(method)
+    if sig is None:
+        return
+    _params, results = sig
+    if not results:
+        if result is not None:
+            raise UnsupportedTypeError("schema: expected nil result")
+        return
     t0 = results[0]
     try:
         _validate_value(schema=schema, pkg=pkg, t=t0, v=result)

@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from ..errors import BuildError
-from .symbols import ExportedFunc, ModuleScan, StructField
+from .symbols import ExportedFunc, ExportedMethod, ModuleScan, StructField
 
 
 def scan_module(*, module_dir: Path) -> ModuleScan:
@@ -66,6 +66,27 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
                 continue
             funcs.append(ExportedFunc(pkg=pkg, name=name, params=list(params), results=list(results)))
 
+        methods: list[ExportedMethod] = []
+        for item in obj.get("methods", []):
+            if not isinstance(item, dict):
+                continue
+            pkg = item.get("pkg")
+            recv = item.get("recv")
+            name = item.get("name")
+            params = item.get("params")
+            results = item.get("results")
+            if not (isinstance(pkg, str) and isinstance(recv, str) and isinstance(name, str)):
+                continue
+            if not isinstance(params, list) or not isinstance(results, list):
+                continue
+            if not all(isinstance(t, str) for t in params):
+                continue
+            if not all(isinstance(t, str) for t in results):
+                continue
+            methods.append(
+                ExportedMethod(pkg=pkg, recv=recv, name=name, params=list(params), results=list(results))
+            )
+
         struct_types_by_pkg: dict[str, set[str]] = {}
         st = obj.get("struct_types")
         if isinstance(st, dict):
@@ -123,6 +144,7 @@ def scan_module(*, module_dir: Path) -> ModuleScan:
 
         return ModuleScan(
             funcs=funcs,
+            methods=methods,
             struct_types_by_pkg=struct_types_by_pkg,
             structs_by_pkg=structs_by_pkg,
         )
@@ -169,8 +191,17 @@ type outFunc struct {
 	Results []string `json:"results"`
 }
 
+type outMethod struct {
+	Pkg     string   `json:"pkg"`
+	Recv    string   `json:"recv"`
+	Name    string   `json:"name"`
+	Params  []string `json:"params"`
+	Results []string `json:"results"`
+}
+
 type outObj struct {
 	Funcs []outFunc `json:"funcs"`
+	Methods []outMethod `json:"methods"`
 	StructTypes map[string][]string `json:"struct_types"`
 	Structs map[string][]outStruct `json:"structs"`
 }
@@ -212,6 +243,7 @@ func main() {
 
 	out := outObj{
 		Funcs:       make([]outFunc, 0, 128),
+		Methods:     make([]outMethod, 0, 128),
 		StructTypes: map[string][]string{},
 		Structs:     map[string][]outStruct{},
 	}
@@ -244,9 +276,6 @@ func main() {
 				if !ok {
 					continue
 				}
-				if fd.Recv != nil {
-					continue
-				}
 				if fd.Name == nil || !fd.Name.IsExported() {
 					continue
 				}
@@ -255,6 +284,8 @@ func main() {
 					continue
 				}
 
+				// Top-level function.
+				if fd.Recv == nil {
 				params := fieldListTypes(fd.Type.Params, im)
 				results := fieldListTypes(fd.Type.Results, im)
 				if params == nil || results == nil {
@@ -263,6 +294,37 @@ func main() {
 
 				out.Funcs = append(out.Funcs, outFunc{
 					Pkg:     p.ImportPath,
+					Name:    fd.Name.Name,
+					Params:  params,
+					Results: results,
+				})
+					continue
+				}
+
+				// Exported method on exported struct receiver type.
+				if fd.Recv.List == nil || len(fd.Recv.List) == 0 || fd.Recv.List[0] == nil || fd.Recv.List[0].Type == nil {
+					continue
+				}
+				rt := renderType(fd.Recv.List[0].Type, im)
+				if rt == "" {
+					continue
+				}
+				recv := strings.TrimPrefix(rt, "*")
+				if recv == "" || !ast.IsExported(recv) {
+					continue
+				}
+				if !structNames[recv] {
+					continue
+				}
+
+				params := fieldListTypes(fd.Type.Params, im)
+				results := fieldListTypes(fd.Type.Results, im)
+				if params == nil || results == nil {
+					continue
+				}
+				out.Methods = append(out.Methods, outMethod{
+					Pkg:     p.ImportPath,
+					Recv:    recv,
 					Name:    fd.Name.Name,
 					Params:  params,
 					Results: results,

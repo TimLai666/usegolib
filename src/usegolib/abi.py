@@ -37,6 +37,40 @@ def encode_call_request(*, pkg: str, fn: str, args: list[Any]) -> bytes:
     return msgpack.packb(payload, use_bin_type=True)
 
 
+def encode_obj_new_request(*, pkg: str, type_name: str, init: Any | None) -> bytes:
+    payload = {
+        "abi": ABI_VERSION,
+        "op": "obj_new",
+        "pkg": pkg,
+        "type": type_name,
+    }
+    if init is not None:
+        payload["init"] = init
+    return msgpack.packb(payload, use_bin_type=True)
+
+
+def encode_obj_call_request(*, pkg: str, type_name: str, obj_id: int, method: str, args: list[Any]) -> bytes:
+    payload = {
+        "abi": ABI_VERSION,
+        "op": "obj_call",
+        "pkg": pkg,
+        "type": type_name,
+        "id": obj_id,
+        "method": method,
+        "args": args,
+    }
+    return msgpack.packb(payload, use_bin_type=True)
+
+
+def encode_obj_free_request(*, obj_id: int) -> bytes:
+    payload = {
+        "abi": ABI_VERSION,
+        "op": "obj_free",
+        "id": obj_id,
+    }
+    return msgpack.packb(payload, use_bin_type=True)
+
+
 def decode_response(payload: bytes) -> ABIResponse:
     try:
         obj = msgpack.unpackb(payload, raw=False)
@@ -63,4 +97,3 @@ def decode_response(payload: bytes) -> ABIResponse:
             detail=err.get("detail") if isinstance(err.get("detail"), dict) else None,
         ),
     )
-

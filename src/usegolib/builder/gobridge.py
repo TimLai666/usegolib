@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .symbols import ExportedFunc
+from .symbols import ExportedFunc, ExportedMethod
 
 
 def write_bridge(
@@ -10,22 +10,29 @@ def write_bridge(
     bridge_dir: Path,
     module_path: str,
     functions: list[ExportedFunc],
+    methods: list[ExportedMethod] | None = None,
     struct_types_by_pkg: dict[str, set[str]] | None = None,
     adapter_types: set[str] | None = None,
 ) -> None:
     # Generate a single `main` package for `-buildmode=c-shared`.
     struct_types_by_pkg = struct_types_by_pkg or {}
+    methods = methods or []
     adapter_types = adapter_types or set()
     imports: dict[str, str] = {}
     for fn in functions:
         if fn.pkg not in imports:
             alias = f"p{len(imports)}"
             imports[fn.pkg] = alias
+    for m in methods:
+        if m.pkg not in imports:
+            alias = f"p{len(imports)}"
+            imports[m.pkg] = alias
 
-    reg_lines: list[str] = []
+    func_reg_lines: list[str] = []
+    method_reg_lines: list[str] = []
     wrap_lines: list[str] = []
 
-    needs_reflect = False
+    needs_reflect = True  # Object handles require reflection helpers.
     allowed_struct_type_keys: set[str] = set()
     for pkg, names in struct_types_by_pkg.items():
         for n in names:
@@ -36,7 +43,7 @@ def write_bridge(
         key = f"{fn.pkg}:{fn.name}"
         wrap_name = f"wrap_{alias}_{fn.name}"
 
-        reg_lines.append(f'        "{key}": {wrap_name},')
+        func_reg_lines.append(f'        "{key}": {wrap_name},')
         struct_types = struct_types_by_pkg.get(fn.pkg, set())
         if any(_base_type(t) in struct_types for t in fn.params) or any(
             _base_type(t) in struct_types for t in fn.results
@@ -55,6 +62,42 @@ def write_bridge(
             )
         )
         wrap_lines.append("")
+
+    obj_type_keys: set[str] = set()
+    for m in methods:
+        alias = imports[m.pkg]
+        type_key = f"{m.pkg}.{m.recv}"
+        obj_type_keys.add(type_key)
+        method_key = f"{type_key}:{m.name}"
+        wrap_name = f"wrapm_{alias}_{m.recv}_{m.name}"
+        method_reg_lines.append(f'        "{method_key}": {wrap_name},')
+
+        struct_types = struct_types_by_pkg.get(m.pkg, set())
+        if any(_base_type(t) in struct_types for t in m.params) or any(
+            _base_type(t) in struct_types for t in m.results
+        ):
+            needs_reflect = True
+        if any(_base_type(t) in adapter_types for t in m.params) or any(
+            _base_type(t) in adapter_types for t in m.results
+        ):
+            needs_reflect = True
+        wrap_lines.extend(
+            _write_method_wrapper(
+                wrap_name=wrap_name,
+                alias=alias,
+                m=m,
+                struct_types=struct_types,
+            )
+        )
+        wrap_lines.append("")
+    type_lines: list[str] = []
+    for m in methods:
+        type_key = f"{m.pkg}.{m.recv}"
+        # De-dupe by key.
+        if any(ln.startswith(f'        "{type_key}":') for ln in type_lines):
+            continue
+        alias = imports[m.pkg]
+        type_lines.append(f'        "{type_key}": reflect.TypeOf({alias}.{m.recv}{{}}),')
 
     src = "\n".join(
         [
@@ -77,6 +120,10 @@ def write_bridge(
             '    Op  string `msgpack:"op"`',
             '    Pkg string `msgpack:"pkg"`',
             '    Fn  string `msgpack:"fn"`',
+            '    Type string `msgpack:"type,omitempty"`',
+            '    ID uint64 `msgpack:"id,omitempty"`',
+            '    Method string `msgpack:"method,omitempty"`',
+            '    Init any `msgpack:"init,omitempty"`',
             '    Args []any `msgpack:"args"`',
             "}",
             "",
@@ -93,12 +140,30 @@ def write_bridge(
             "}",
             "",
             "type Handler func(args []any) (any, *ErrorObj)",
+            "type MethodHandler func(obj any, args []any) (any, *ErrorObj)",
             "",
             "var dispatch = map[string]Handler{}",
+            "var methodDispatch = map[string]MethodHandler{}",
+            "var typeByKey = map[string]reflect.Type{}",
+            "",
+            "type ObjEntry struct {",
+            "    Key string",
+            "    Obj any",
+            "}",
+            "",
+            "var objNext uint64",
+            "var objMu sync.RWMutex",
+            "var objByID = map[uint64]ObjEntry{}",
             "",
             "func init() {",
             "    dispatch = map[string]Handler{",
-            *reg_lines,
+            *func_reg_lines,
+            "    }",
+            "    methodDispatch = map[string]MethodHandler{",
+            *method_reg_lines,
+            "    }",
+            "    typeByKey = map[string]reflect.Type{",
+            *type_lines,
             "    }",
             "}",
             "",
@@ -117,35 +182,108 @@ def write_bridge(
             '        writeError(respPtr, respLen, "UnsupportedABIVersion", "unsupported abi version", map[string]any{"abi": req.ABI})',
             "        return 0",
             "    }",
-            '    if req.Op != "call" {',
+            "",
+            "    switch req.Op {",
+            '    case "call":',
+            '        key := req.Pkg + ":" + req.Fn',
+            "        h := dispatch[key]",
+            "        if h == nil {",
+            '            writeError(respPtr, respLen, "SymbolNotFound", "symbol not found", map[string]any{"pkg": req.Pkg, "fn": req.Fn})',
+            "            return 0",
+            "        }",
+            "",
+            "        var result any",
+            "        var errObj *ErrorObj",
+            "        func() {",
+            "            defer func() {",
+            "                if r := recover(); r != nil {",
+            '                    errObj = &ErrorObj{Type: "GoPanicError", Message: "panic"}',
+            "                }",
+            "            }()",
+            "            result, errObj = h(req.Args)",
+            "        }()",
+            "",
+            "        if errObj != nil {",
+            "            writeResp(respPtr, respLen, &Response{Ok: false, Error: errObj})",
+            "            return 0",
+            "        }",
+            "        writeResp(respPtr, respLen, &Response{Ok: true, Result: result})",
+            "        return 0",
+            '    case "obj_new":',
+            "        typeKey := req.Pkg + \".\" + req.Type",
+            "        rt, ok := typeByKey[typeKey]",
+            "        if !ok {",
+            '            writeError(respPtr, respLen, "TypeNotFound", "type not found", map[string]any{"type": typeKey})',
+            "            return 0",
+            "        }",
+            "        if rt.Kind() != reflect.Struct {",
+            '            writeError(respPtr, respLen, "ABIError", "type is not a struct", map[string]any{"type": typeKey})',
+            "            return 0",
+            "        }",
+            "        sv := reflect.New(rt).Elem()",
+            "        if req.Init != nil {",
+            "            cv, ok := convertToType(req.Init, rt)",
+            "            if !ok {",
+            '                writeError(respPtr, respLen, "UnsupportedTypeError", "invalid init", map[string]any{"type": typeKey})',
+            "                return 0",
+            "            }",
+            "            sv = cv",
+            "        }",
+            "        pv := reflect.New(rt)",
+            "        pv.Elem().Set(sv)",
+            "        obj := pv.Interface()",
+            "",
+            "        id := atomic.AddUint64(&objNext, 1)",
+            "        objMu.Lock()",
+            "        objByID[id] = ObjEntry{Key: typeKey, Obj: obj}",
+            "        objMu.Unlock()",
+            "        writeResp(respPtr, respLen, &Response{Ok: true, Result: id})",
+            "        return 0",
+            '    case "obj_call":',
+            "        typeKey := req.Pkg + \".\" + req.Type",
+            "        objMu.RLock()",
+            "        ent, ok := objByID[req.ID]",
+            "        objMu.RUnlock()",
+            "        if !ok {",
+            '            writeError(respPtr, respLen, "ObjectNotFound", "object not found", map[string]any{"id": req.ID})',
+            "            return 0",
+            "        }",
+            "        if ent.Key != typeKey {",
+            '            writeError(respPtr, respLen, "ABIError", "object type mismatch", map[string]any{"id": req.ID, "type": typeKey})',
+            "            return 0",
+            "        }",
+            "        mk := typeKey + \":\" + req.Method",
+            "        mh := methodDispatch[mk]",
+            "        if mh == nil {",
+            '            writeError(respPtr, respLen, "MethodNotFound", "method not found", map[string]any{\"type\": typeKey, \"method\": req.Method})',
+            "            return 0",
+            "        }",
+            "        var result any",
+            "        var errObj *ErrorObj",
+            "        func() {",
+            "            defer func() {",
+            "                if r := recover(); r != nil {",
+            '                    errObj = &ErrorObj{Type: "GoPanicError", Message: "panic"}',
+            "                }",
+            "            }()",
+            "            result, errObj = mh(ent.Obj, req.Args)",
+            "        }()",
+            "        if errObj != nil {",
+            "            writeResp(respPtr, respLen, &Response{Ok: false, Error: errObj})",
+            "            return 0",
+            "        }",
+            "        writeResp(respPtr, respLen, &Response{Ok: true, Result: result})",
+            "        return 0",
+            '    case "obj_free":',
+            "        objMu.Lock()",
+            "        delete(objByID, req.ID)",
+            "        objMu.Unlock()",
+            "        writeResp(respPtr, respLen, &Response{Ok: true, Result: nil})",
+            "        return 0",
+            "    default:",
             '        writeError(respPtr, respLen, "UnsupportedOperation", "unsupported op", map[string]any{"op": req.Op})',
             "        return 0",
             "    }",
-            "",
-            '    key := req.Pkg + ":" + req.Fn',
-            "    h := dispatch[key]",
-            "    if h == nil {",
-            '        writeError(respPtr, respLen, "SymbolNotFound", "symbol not found", map[string]any{"pkg": req.Pkg, "fn": req.Fn})',
-            "        return 0",
-            "    }",
-            "",
-            "    var result any",
-            "    var errObj *ErrorObj",
-            "    func() {",
-            "        defer func() {",
-            "            if r := recover(); r != nil {",
-            '                errObj = &ErrorObj{Type: "GoPanicError", Message: "panic"}',
-            "            }",
-            "        }()",
-            "        result, errObj = h(req.Args)",
-            "    }()",
-            "",
-            "    if errObj != nil {",
-            "        writeResp(respPtr, respLen, &Response{Ok: false, Error: errObj})",
-            "        return 0",
-            "    }",
-            "    writeResp(respPtr, respLen, &Response{Ok: true, Result: result})",
-            "    return 0",
             "}",
             "",
             "func writeError(respPtr **C.uchar, respLen *C.size_t, typ string, msg string, detail map[string]any) {",
@@ -186,11 +324,11 @@ def write_bridge(
         "",
         '    "github.com/vmihailenco/msgpack/v5"',
     ]
-    if needs_reflect:
-        import_block.append('    "reflect"')
-        import_block.append('    "strings"')
-    if needs_reflect:
-        import_block.append('    "time"')
+    import_block.append('    "sync"')
+    import_block.append('    "sync/atomic"')
+    import_block.append('    "reflect"')
+    import_block.append('    "strings"')
+    import_block.append('    "time"')
     if "uuid.UUID" in adapter_types:
         import_block.append('    uuid "github.com/google/uuid"')
     for pkg, alias in imports.items():
@@ -276,6 +414,82 @@ def _write_wrapper(
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
         if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
+            "time.Time",
+            "time.Duration",
+            "uuid.UUID",
+        }:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return v0, nil")
+        else:
+            lines.append("    return r0, nil")
+
+    lines.append("}")
+    return lines
+
+
+def _write_method_wrapper(
+    *,
+    wrap_name: str,
+    alias: str,
+    m: ExportedMethod,
+    struct_types: set[str],
+) -> list[str]:
+    lines: list[str] = []
+    recv_go = f"*{alias}.{m.recv}"
+    lines.append(f"func {wrap_name}(obj any, args []any) (any, *ErrorObj) {{")
+    lines.append(f"    recv, ok := obj.({recv_go})")
+    lines.append("    if !ok {")
+    lines.append('        return nil, &ErrorObj{Type: "ABIError", Message: "wrong receiver type"}')
+    lines.append("    }")
+    lines.append(f"    if len(args) != {len(m.params)} {{")
+    lines.append('        return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}')
+    lines.append("    }")
+
+    arg_names: list[str] = []
+    for i, t in enumerate(m.params):
+        vn = f"a{i}"
+        arg_names.append(vn)
+        lines.extend(
+            _write_arg_convert(
+                var_name=vn,
+                go_type=t,
+                value_expr=f"args[{i}]",
+                pkg_alias=alias,
+                struct_types=struct_types,
+            )
+        )
+
+    call = f"recv.{m.name}({', '.join(arg_names)})"
+    if len(m.results) == 0:
+        lines.append(f"    {call}")
+        lines.append("    return nil, nil")
+    elif len(m.results) == 1:
+        lines.append(f"    r0 := {call}")
+        if _base_type(m.results[0]) in struct_types or _base_type(m.results[0]) in {
+            "time.Time",
+            "time.Duration",
+            "uuid.UUID",
+        }:
+            lines.append("    v0, ok := exportAny(reflect.ValueOf(r0))")
+            lines.append("    if !ok {")
+            lines.append(
+                '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}'
+            )
+            lines.append("    }")
+            lines.append("    return v0, nil")
+        else:
+            lines.append("    return r0, nil")
+    else:
+        lines.append(f"    r0, err := {call}")
+        lines.append("    if err != nil {")
+        lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
+        lines.append("    }")
+        if _base_type(m.results[0]) in struct_types or _base_type(m.results[0]) in {
             "time.Time",
             "time.Duration",
             "uuid.UUID",

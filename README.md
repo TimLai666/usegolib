@@ -91,6 +91,25 @@ th = h.typed()
 print(th.AddInt(1, 2))
 ```
 
+Object handles (exported methods, when available in the artifact):
+
+```python
+# Create a Go-side object and call methods without re-sending the receiver value each time.
+with h.object("Counter", {"n": 1}) as c:
+    print(c.Inc(2))
+```
+
+Typed object handles:
+
+```python
+th = h.typed()
+types = th.types
+
+with th.object("Counter", types.Counter(N=10)) as c:
+    snap = c.Snapshot()
+    print(snap)  # -> types.Snapshot(...)
+```
+
 ## Quickstart (generate a distributable Python package project)
 
 ```bash

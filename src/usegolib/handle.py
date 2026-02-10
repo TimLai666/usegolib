@@ -21,7 +21,14 @@ from .errors import (
     VersionConflictError,
 )
 from .runtime.cbridge import SharedLibClient
-from .schema import Schema, validate_call_args, validate_call_result
+from .schema import (
+    Schema,
+    validate_call_args,
+    validate_call_result,
+    validate_method_args,
+    validate_method_result,
+    validate_struct_value,
+)
 from .runtime.platform import host_goarch, host_goos
 
 
@@ -127,6 +134,37 @@ class PackageHandle:
     def typed(self) -> "TypedPackageHandle":
         return TypedPackageHandle(self)
 
+    def object(self, type_name: str, init: Any | None = None) -> "GoObject":
+        if self._schema is not None and init is not None:
+            from .typed import encode_value
+
+            init = encode_value(schema=self._schema, pkg=self.package, v=init)
+            validate_struct_value(schema=self._schema, pkg=self.package, struct=type_name, value=init)
+        try:
+            req = abi.encode_obj_new_request(pkg=self.package, type_name=type_name, init=init)
+        except Exception as e:  # noqa: BLE001 - encode boundary
+            raise ABIEncodeError(str(e)) from e
+
+        resp_bytes = self._client.call(req)
+        resp = abi.decode_response(resp_bytes)
+        if resp.ok:
+            if not isinstance(resp.result, int) or isinstance(resp.result, bool):
+                raise ABIDecodeError("obj_new: expected integer object id")
+            return GoObject(_pkg=self, _type=type_name, _id=resp.result)
+
+        err = resp.error
+        if err is None:
+            raise ABIDecodeError("missing error object in failed response")
+        if err.type == "GoError":
+            raise GoError(err.message)
+        if err.type == "GoPanicError":
+            raise GoPanicError(err.message)
+        if err.type == "UnsupportedTypeError":
+            raise UnsupportedTypeError(err.message)
+        if err.type == "UnsupportedSignatureError":
+            raise UnsupportedSignatureError(err.message)
+        raise UseGoLibError(f"{err.type}: {err.message}")
+
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -193,6 +231,152 @@ class TypedPackageHandle:
         def _call(*args: Any) -> Any:
             result = fn(*args)
             sig = schema.symbols_by_pkg.get(self._base.package, {}).get(name)
+            if sig is None:
+                return result
+            _params, results = sig
+            if not results:
+                return result
+            from .typed import decode_value
+
+            return decode_value(types=self._types, go_type=results[0], v=result)
+
+        return _call
+
+    def object(self, type_name: str, init: Any | None = None) -> "TypedGoObject":
+        obj = self._base.object(type_name, init=init)
+        schema = self._base._schema  # noqa: SLF001 - internal linkage
+        assert schema is not None
+        return TypedGoObject(_base=obj, _types=self._types, _schema=schema, _pkg=self._base.package)
+
+
+@dataclass
+class GoObject:
+    _pkg: PackageHandle
+    _type: str
+    _id: int
+    _closed: bool = False
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    @property
+    def type_name(self) -> str:
+        return self._type
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            req = abi.encode_obj_free_request(obj_id=self._id)
+        except Exception:
+            return
+        try:
+            _ = self._pkg._client.call(req)  # noqa: SLF001 - internal linkage
+        except Exception:
+            return
+
+    def __enter__(self) -> "GoObject":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+        self.close()
+
+    def __del__(self) -> None:
+        # Best-effort cleanup; ignore errors at interpreter shutdown.
+        try:
+            self.close()
+        except Exception:
+            return
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        def _call(*args: Any) -> Any:
+            if self._closed:
+                raise UseGoLibError("object is closed")
+            args_list = list(args)
+            schema = self._pkg._schema  # noqa: SLF001 - internal linkage
+            if schema is not None:
+                from .typed import encode_value
+
+                args_list = [encode_value(schema=schema, pkg=self._pkg.package, v=a) for a in args_list]
+                validate_method_args(
+                    schema=schema,
+                    pkg=self._pkg.package,
+                    recv=self._type,
+                    method=name,
+                    args=args_list,
+                )
+            try:
+                req = abi.encode_obj_call_request(
+                    pkg=self._pkg.package,
+                    type_name=self._type,
+                    obj_id=self._id,
+                    method=name,
+                    args=args_list,
+                )
+            except Exception as e:  # noqa: BLE001 - encode boundary
+                raise ABIEncodeError(str(e)) from e
+
+            resp_bytes = self._pkg._client.call(req)  # noqa: SLF001 - internal linkage
+            resp = abi.decode_response(resp_bytes)
+            if resp.ok:
+                if schema is not None:
+                    validate_method_result(
+                        schema=schema,
+                        pkg=self._pkg.package,
+                        recv=self._type,
+                        method=name,
+                        result=resp.result,
+                    )
+                return resp.result
+
+            err = resp.error
+            if err is None:
+                raise ABIDecodeError("missing error object in failed response")
+            if err.type == "GoError":
+                raise GoError(err.message)
+            if err.type == "GoPanicError":
+                raise GoPanicError(err.message)
+            if err.type == "UnsupportedTypeError":
+                raise UnsupportedTypeError(err.message)
+            if err.type == "UnsupportedSignatureError":
+                raise UnsupportedSignatureError(err.message)
+            raise UseGoLibError(f"{err.type}: {err.message}")
+
+        return _call
+
+
+@dataclass(frozen=True)
+class TypedGoObject:
+    _base: GoObject
+    _types: Any
+    _schema: Schema
+    _pkg: str
+
+    @property
+    def id(self) -> int:
+        return self._base.id
+
+    @property
+    def type_name(self) -> str:
+        return self._base.type_name
+
+    def close(self) -> None:
+        self._base.close()
+
+    def __enter__(self) -> "TypedGoObject":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+        self.close()
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        fn = getattr(self._base, name)
+
+        def _call(*args: Any) -> Any:
+            result = fn(*args)
+            sig = self._schema.methods_by_pkg.get(self._pkg, {}).get(self._base.type_name, {}).get(name)
             if sig is None:
                 return result
             _params, results = sig

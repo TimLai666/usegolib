@@ -14,7 +14,7 @@ from .lock import leaf_lock
 from .resolve import resolve_module_target
 from .reuse import artifact_ready
 from .scan import scan_module
-from .symbols import ExportedFunc
+from .symbols import ExportedFunc, ExportedMethod
 from .zig import ensure_zig
 
 
@@ -97,6 +97,18 @@ def _is_supported_sig(fn: ExportedFunc, *, struct_types: set[str] | None = None)
     return True
 
 
+def _is_supported_method_sig(m: ExportedMethod, *, struct_types: set[str] | None = None) -> bool:
+    if any(not _is_supported_type(t, struct_types=struct_types) for t in m.params):
+        return False
+    if any(not _is_supported_type(t, struct_types=struct_types) and t != "error" for t in m.results):
+        return False
+    if len(m.results) > 2:
+        return False
+    if len(m.results) == 2 and m.results[1] != "error":
+        return False
+    return True
+
+
 def _bridge_go_mod(
     *,
     bridge_dir: Path,
@@ -170,11 +182,17 @@ def build_artifact(
     packages = _list_packages(module_dir)
     scan = scan_module(module_dir=module_dir)
     exported = scan.funcs
+    methods = scan.methods
 
     exported = [
         fn
         for fn in exported
         if _is_supported_sig(fn, struct_types=scan.struct_types_by_pkg.get(fn.pkg))
+    ]
+    methods = [
+        m
+        for m in methods
+        if _is_supported_method_sig(m, struct_types=scan.struct_types_by_pkg.get(m.pkg))
     ]
 
     with tempfile.TemporaryDirectory(prefix="usegolib-bridge-") as td:
@@ -198,6 +216,13 @@ def build_artifact(
                 adapter_types.add("time.Duration")
             if "uuid.UUID" in fn.params or "uuid.UUID" in fn.results:
                 adapter_types.add("uuid.UUID")
+        for m in methods:
+            if "time.Time" in m.params or "time.Time" in m.results:
+                adapter_types.add("time.Time")
+            if "time.Duration" in m.params or "time.Duration" in m.results:
+                adapter_types.add("time.Duration")
+            if "uuid.UUID" in m.params or "uuid.UUID" in m.results:
+                adapter_types.add("uuid.UUID")
         for pkg, by_name in scan.structs_by_pkg.items():
             for _name, fields in by_name.items():
                 for f in fields:
@@ -212,6 +237,7 @@ def build_artifact(
             bridge_dir=bridge_dir,
             module_path=module_path,
             functions=exported,
+            methods=methods,
             struct_types_by_pkg=scan.struct_types_by_pkg,
             adapter_types=adapter_types,
         )
@@ -309,6 +335,16 @@ def build_artifact(
                             "results": fn.results,
                         }
                         for fn in exported
+                    ],
+                    "methods": [
+                        {
+                            "pkg": m.pkg,
+                            "recv": m.recv,
+                            "name": m.name,
+                            "params": m.params,
+                            "results": m.results,
+                        }
+                        for m in methods
                     ],
                 },
                 "library": {"path": lib_name, "sha256": sha},

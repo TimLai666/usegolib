@@ -78,11 +78,13 @@ OpenSpec change:
 
 This is planned after Milestone 5 (v1.0 readiness) unless explicitly reprioritized.
 
-Current v0.x behavior: exported methods and generic functions are ignored by the build scanner.
+Current v0.x behavior: generic functions are ignored by the build scanner.
 
-- Exported method support
-  - allow calling exported methods by generating wrapper functions in the bridge (receiver passed explicitly)
-  - define naming and overload rules in schema/manifest (avoid collisions)
+- Exported method support (implemented)
+  - Go-side object handles (opaque ids) to avoid serializing receivers on every call
+  - ABI ops: `obj_new`, `obj_call`, `obj_free`
+  - Python API: `PackageHandle.object(type_name, init=None) -> GoObject` and `TypedPackageHandle.object(...) -> TypedGoObject`
+  - Schema/manifest: `schema.methods` (receiver + method signature) for runtime validation and typed decoding
 - Generic function support (Phase A)
   - support calling generic functions by generating concrete instantiations at build time for a configured set of type arguments
   - avoid implicit type inference across the ABI (must be explicit in schema/bindings)
