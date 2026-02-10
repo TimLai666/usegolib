@@ -39,7 +39,7 @@ def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> Modul
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                text=False,
                 check=False,
             )
         except FileNotFoundError as e:
@@ -50,12 +50,35 @@ def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> Modul
                 "(and use prebuilt artifacts/wheels)."
             ) from e
         if proc.returncode != 0:
-            raise BuildError(f"go scan failed\n{proc.stdout}")
+            out = (proc.stdout or b"").decode("utf-8", errors="replace")
+            raise BuildError(f"go scan failed\n{out}")
 
         try:
-            obj = json.loads(proc.stdout)
+            out = (proc.stdout or b"").decode("utf-8", errors="replace")
+            try:
+                obj = json.loads(out)
+            except Exception:
+                # Best-effort: some Go toolchains print non-JSON lines (e.g. toolchain
+                # switching messages) that get merged into stdout. Extract the first
+                # JSON object and retry.
+                start = out.find("{")
+                if start == -1:
+                    raise
+                depth = 0
+                end = -1
+                for i, ch in enumerate(out[start:], start=start):
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                if end == -1:
+                    raise
+                obj = json.loads(out[start:end])
         except Exception as e:  # noqa: BLE001
-            raise BuildError(f"failed to parse go scan output: {e}\n{proc.stdout}") from e
+            raise BuildError(f"failed to parse go scan output: {e}\n{out}") from e
 
         funcs: list[ExportedFunc] = []
         for item in obj.get("funcs", []):

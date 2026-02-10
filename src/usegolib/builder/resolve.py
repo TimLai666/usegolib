@@ -108,7 +108,7 @@ def _go_mod_download_json(arg: str, *, env: dict[str, str] | None) -> dict:
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                text=False,
                 check=False,
             )
         except FileNotFoundError as e:
@@ -118,9 +118,9 @@ def _go_mod_download_json(arg: str, *, env: dict[str, str] | None) -> dict:
                 "If you do not want auto-build on import, pass `build_if_missing=False` "
                 "(and use prebuilt artifacts/wheels)."
             ) from e
+        out = (proc.stdout or b"").decode("utf-8", errors="replace")
         if proc.returncode != 0:
-            raise BuildError(f"go mod download failed for {arg}\n{proc.stdout}")
-        out = proc.stdout
+            raise BuildError(f"go mod download failed for {arg}\n{out}")
         try:
             return json.loads(out)
         except Exception:

@@ -29,7 +29,7 @@ def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            text=False,
             check=False,
         )
     except FileNotFoundError as e:
@@ -42,9 +42,10 @@ def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str
                 "(and use prebuilt artifacts/wheels)."
             ) from e
         raise BuildError(f"command not found: {prog}") from e
+    out = (proc.stdout or b"").decode("utf-8", errors="replace")
     if proc.returncode != 0:
-        raise BuildError(f"command failed: {' '.join(cmd)}\n{proc.stdout}")
-    return proc.stdout
+        raise BuildError(f"command failed: {' '.join(cmd)}\n{out}")
+    return out
 
 
 def _read_module_path(module_dir: Path) -> str:
