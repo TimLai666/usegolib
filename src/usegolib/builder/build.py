@@ -18,7 +18,7 @@ from .lock import leaf_lock
 from .resolve import resolve_module_target
 from .reuse import artifact_ready
 from .scan import scan_module
-from .symbols import ExportedFunc, ExportedMethod, GenericFuncDef, GenericInstantiation
+from .symbols import ExportedFunc, ExportedMethod, ExportedVar, GenericFuncDef, GenericInstantiation
 from .zig import ensure_zig
 
 
@@ -425,6 +425,7 @@ def build_artifact(
     exported = scan.funcs
     methods = scan.methods
     generic_defs = scan.generic_funcs
+    vars_ = scan.vars
 
     exported = [
         fn
@@ -436,6 +437,26 @@ def build_artifact(
         for m in methods
         if _is_supported_method_sig(m, struct_types=scan.struct_types_by_pkg.get(m.pkg))
     ]
+
+    # Vars: only expose exported vars whose type is a named struct type in the same package.
+    # This supports "namespace" patterns like `isr.DL.Of(...)`.
+    usable_vars: list[ExportedVar] = []
+    for v in vars_:
+        base = v.type.strip()
+        if base.startswith("*"):
+            base = base[1:].strip()
+        if not base:
+            continue
+        if "." in base or "/" in base:
+            continue
+        if base not in scan.struct_types_by_pkg.get(v.pkg, set()):
+            continue
+        usable_vars.append(v)
+
+    # Methods for bridge wrappers require exported receiver type names (the bridge package
+    # cannot reference unexported identifiers from imported packages). Unexported receiver
+    # methods remain in the manifest schema and are invoked via reflective dispatch.
+    methods_for_bridge = [m for m in methods if m.recv[:1].isupper()]
 
     generic_insts: list[GenericInstantiation] = []
     if generics is not None:
@@ -499,6 +520,8 @@ def build_artifact(
             all_structs = set(scan.struct_types_by_pkg.get(pkg, set()))
             with_fields = set(scan.structs_by_pkg.get(pkg, {}).keys())
             opaque = all_structs - with_fields
+            # Unexported structs are always treated as opaque object handles.
+            opaque |= {n for n in all_structs if not n[:1].isupper()}
             if opaque:
                 opaque_struct_types_by_pkg[pkg] = opaque
 
@@ -506,8 +529,9 @@ def build_artifact(
             bridge_dir=bridge_dir,
             module_path=module_path,
             functions=exported,
-            methods=methods,
+            methods=methods_for_bridge,
             generic_instantiations=generic_insts,
+            vars=usable_vars,
             struct_types_by_pkg=scan.struct_types_by_pkg,
             opaque_struct_types_by_pkg=opaque_struct_types_by_pkg,
             adapter_types=adapter_types,
@@ -592,7 +616,13 @@ def build_artifact(
                 )
                 by_name: dict[str, list[dict[str, Any]]] = {}
                 for name in sorted(names):
-                    fields = scan.structs_by_pkg.get(pkg, {}).get(name, [])
+                    # Treat unexported structs as opaque by default: even if they have
+                    # exported fields (e.g. embedded pointers), passing them as record
+                    # dicts breaks fluent/method APIs. They are represented as object handles.
+                    if not name[:1].isupper():
+                        fields = []
+                    else:
+                        fields = scan.structs_by_pkg.get(pkg, {}).get(name, [])
                     by_name[name] = [
                         {
                             "name": f.name,
@@ -641,6 +671,15 @@ def build_artifact(
                             "symbol": gi.symbol,
                         }
                         for gi in generic_insts
+                    ],
+                    "vars": [
+                        {
+                            "pkg": v.pkg,
+                            "name": v.name,
+                            "type": v.type,
+                            "doc": v.doc,
+                        }
+                        for v in usable_vars
                     ],
                 },
                 "library": {"path": lib_name, "sha256": sha},

@@ -23,6 +23,14 @@ class ExportedMethod:
 
 
 @dataclass(frozen=True)
+class ExportedVar:
+    pkg: str
+    name: str
+    type: str
+    doc: str | None = None
+
+
+@dataclass(frozen=True)
 class StructField:
     name: str
     type: str
@@ -37,6 +45,7 @@ class ModuleScan:
     funcs: list[ExportedFunc]
     methods: list[ExportedMethod]
     generic_funcs: list["GenericFuncDef"]
+    vars: list[ExportedVar]
     struct_types_by_pkg: dict[str, set[str]]
     structs_by_pkg: dict[str, dict[str, list[StructField]]]
 

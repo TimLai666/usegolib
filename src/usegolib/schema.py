@@ -69,6 +69,8 @@ class Schema:
     # pkg -> genericName -> typeArgsTuple -> concreteSymbolName
     generics_by_pkg: dict[str, dict[str, dict[tuple[str, ...], str]]]
     generic_docs_by_pkg: dict[str, dict[str, str]]
+    vars_by_pkg: dict[str, dict[str, str]]
+    var_docs_by_pkg: dict[str, dict[str, str]]
 
     @classmethod
     def from_manifest(cls, manifest_schema: dict[str, Any] | None) -> "Schema | None":
@@ -209,6 +211,29 @@ class Schema:
                 if isinstance(doc, str) and doc.strip():
                     generic_docs_by_pkg.setdefault(pkg, {})[name] = doc.strip()
 
+        vars_by_pkg: dict[str, dict[str, str]] = {}
+        var_docs_by_pkg: dict[str, dict[str, str]] = {}
+        raw_vars = manifest_schema.get("vars")
+        if isinstance(raw_vars, list):
+            for v in raw_vars:
+                if not isinstance(v, dict):
+                    continue
+                pkg = v.get("pkg")
+                name = v.get("name")
+                typ = v.get("type")
+                doc = v.get("doc")
+                if not (isinstance(pkg, str) and isinstance(name, str) and isinstance(typ, str)):
+                    continue
+                if not pkg or not name or not typ:
+                    continue
+                base = typ.strip()
+                if base.startswith("*"):
+                    base = base[1:].strip()
+                if base:
+                    vars_by_pkg.setdefault(pkg, {})[name] = base
+                if isinstance(doc, str) and doc.strip():
+                    var_docs_by_pkg.setdefault(pkg, {})[name] = doc.strip()
+
         return cls(
             structs_by_pkg=structs,
             symbols_by_pkg=symbols_by_pkg,
@@ -217,6 +242,8 @@ class Schema:
             method_docs_by_pkg=method_docs_by_pkg,
             generics_by_pkg=generics_by_pkg,
             generic_docs_by_pkg=generic_docs_by_pkg,
+            vars_by_pkg=vars_by_pkg,
+            var_docs_by_pkg=var_docs_by_pkg,
         )
 
 

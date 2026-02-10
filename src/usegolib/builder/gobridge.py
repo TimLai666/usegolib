@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .symbols import ExportedFunc, ExportedMethod, GenericInstantiation
+from .symbols import ExportedFunc, ExportedMethod, ExportedVar, GenericInstantiation
 
 
 def write_bridge(
@@ -12,6 +12,7 @@ def write_bridge(
     functions: list[ExportedFunc],
     methods: list[ExportedMethod] | None = None,
     generic_instantiations: list[GenericInstantiation] | None = None,
+    vars: list[ExportedVar] | None = None,
     struct_types_by_pkg: dict[str, set[str]] | None = None,
     opaque_struct_types_by_pkg: dict[str, set[str]] | None = None,
     adapter_types: set[str] | None = None,
@@ -21,6 +22,7 @@ def write_bridge(
     opaque_struct_types_by_pkg = opaque_struct_types_by_pkg or {}
     methods = methods or []
     generic_instantiations = generic_instantiations or []
+    vars = vars or []
     adapter_types = adapter_types or set()
     imports: dict[str, str] = {}
     for fn in functions:
@@ -35,6 +37,10 @@ def write_bridge(
         if gi.pkg not in imports:
             alias = f"p{len(imports)}"
             imports[gi.pkg] = alias
+    for v in vars:
+        if v.pkg not in imports:
+            alias = f"p{len(imports)}"
+            imports[v.pkg] = alias
 
     func_reg_lines: list[str] = []
     method_reg_lines: list[str] = []
@@ -90,6 +96,14 @@ def write_bridge(
                 opaque_struct_types=opaque_struct_types,
             )
         )
+        wrap_lines.append("")
+
+    for v in vars:
+        alias = imports[v.pkg]
+        key = f"{v.pkg}:__usegolib_getvar_{v.name}"
+        wrap_name = f"wrapv_{alias}_{v.name}"
+        func_reg_lines.append(f'        "{key}": {wrap_name},')
+        wrap_lines.extend(_write_var_get_wrapper(wrap_name=wrap_name, alias=alias, v=v))
         wrap_lines.append("")
 
     obj_type_keys: set[str] = set()
@@ -187,11 +201,167 @@ def write_bridge(
             "var objByID = map[uint64]ObjEntry{}",
             "",
             "func storeObj(typeKey string, obj any) uint64 {",
-            "    id := atomic.AddUint64(&objNext, 1)",
+                "    id := atomic.AddUint64(&objNext, 1)",
             "    objMu.Lock()",
             "    objByID[id] = ObjEntry{Key: typeKey, Obj: obj}",
             "    objMu.Unlock()",
             "    return id",
+            "}",
+            "",
+            "func isExportedIdent(name string) bool {",
+            "    if name == \"\" {",
+            "        return false",
+            "    }",
+            "    r := rune(name[0])",
+            "    return r >= 'A' && r <= 'Z'",
+            "}",
+            "",
+            "func reflectCallMethod(pkg string, typeName string, obj any, method string, args []any) (any, *ErrorObj) {",
+            "    rv := reflect.ValueOf(obj)",
+            "    if !rv.IsValid() {",
+            '        return nil, &ErrorObj{Type: "ObjectNotFound", Message: "invalid object"}',
+            "    }",
+            "    mv := rv.MethodByName(method)",
+            "    if !mv.IsValid() {",
+            '        return nil, &ErrorObj{Type: "MethodNotFound", Message: "method not found"}',
+            "    }",
+            "    mt := mv.Type()",
+            "    nin := mt.NumIn()",
+            "    isVar := mt.IsVariadic()",
+            "    if !isVar {",
+            "        if len(args) != nin {",
+            '            return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}',
+            "        }",
+            "    } else {",
+            "        if len(args) < nin-1 {",
+            '            return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}',
+            "        }",
+            "    }",
+            "",
+            "    // Variadic calls are represented over the ABI as a single final argument: a slice.",
+            "    // When len(args) == nin, the last arg is already packed and must be expanded with CallSlice.",
+            "    if isVar && len(args) == nin {",
+            "        callArgs := make([]reflect.Value, 0, nin)",
+            "        for i := 0; i < nin-1; i++ {",
+            "            pt := mt.In(i)",
+            "            cv, ok := convertToType(args[i], pt)",
+            "            if !ok {",
+            '                return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}',
+            "            }",
+            "            callArgs = append(callArgs, cv)",
+            "        }",
+            "        pt := mt.In(nin - 1)",
+            "        cv, ok := convertToType(args[nin-1], pt)",
+            "        if !ok {",
+            '            return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}',
+            "        }",
+            "        callArgs = append(callArgs, cv)",
+            "        outs := mv.CallSlice(callArgs)",
+            "        if len(outs) == 0 {",
+            "            return nil, nil",
+            "        }",
+            "        // Treat trailing error specially (0/1/2 return conventions).",
+            "        if len(outs) == 1 {",
+            "            o0 := outs[0]",
+            "            if o0.IsValid() && o0.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {",
+            "                if o0.IsNil() {",
+            "                    return nil, nil",
+            "                }",
+            "                return nil, &ErrorObj{Type: \"GoError\", Message: o0.Interface().(error).Error()}",
+            "            }",
+            "            return exportResultAsAny(pkg, typeName, o0)",
+            "        }",
+            "        if len(outs) == 2 {",
+            "            o0 := outs[0]",
+            "            o1 := outs[1]",
+            "            if o1.IsValid() && o1.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {",
+            "                if !o1.IsNil() {",
+            "                    return nil, &ErrorObj{Type: \"GoError\", Message: o1.Interface().(error).Error()}",
+            "                }",
+            "                return exportResultAsAny(pkg, typeName, o0)",
+            "            }",
+            "        }",
+            '        return nil, &ErrorObj{Type: "UnsupportedSignatureError", Message: "unsupported method signature"}',
+            "    }",
+            "",
+            "    callArgs := make([]reflect.Value, 0, len(args))",
+            "    for i := 0; i < nin; i++ {",
+            "        pt := mt.In(i)",
+            "        if isVar && i == nin-1 {",
+            "            // Expand remaining args into the variadic element type.",
+            "            et := pt.Elem()",
+            "            for j := i; j < len(args); j++ {",
+                "                cv, ok := convertToType(args[j], et)",
+                "                if !ok {",
+                '                    return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}',
+                "                }",
+                "                callArgs = append(callArgs, cv)",
+            "            }",
+            "            break",
+            "        }",
+            "        cv, ok := convertToType(args[i], pt)",
+            "        if !ok {",
+            '            return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported arg type"}',
+            "        }",
+            "        callArgs = append(callArgs, cv)",
+            "    }",
+            "",
+            "    outs := mv.Call(callArgs)",
+            "    if len(outs) == 0 {",
+            "        return nil, nil",
+            "    }",
+            "    // Treat trailing error specially (0/1/2 return conventions).",
+            "    if len(outs) == 1 {",
+                "        o0 := outs[0]",
+                "        if o0.IsValid() && o0.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {",
+                    "            if o0.IsNil() {",
+                    "                return nil, nil",
+                    "            }",
+                    "            return nil, &ErrorObj{Type: \"GoError\", Message: o0.Interface().(error).Error()}",
+                "        }",
+                "        return exportResultAsAny(pkg, typeName, o0)",
+            "    }",
+            "    if len(outs) == 2 {",
+                "        o0 := outs[0]",
+                "        o1 := outs[1]",
+                "        if o1.IsValid() && o1.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {",
+                    "            if !o1.IsNil() {",
+                    "                return nil, &ErrorObj{Type: \"GoError\", Message: o1.Interface().(error).Error()}",
+                    "            }",
+                    "            return exportResultAsAny(pkg, typeName, o0)",
+                "        }",
+            "    }",
+            '    return nil, &ErrorObj{Type: "UnsupportedSignatureError", Message: "unsupported method signature"}',
+            "}",
+            "",
+            "func exportResultAsAny(pkg string, typeName string, v reflect.Value) (any, *ErrorObj) {",
+            "    if !v.IsValid() {",
+            "        return nil, nil",
+            "    }",
+            "    if v.Kind() == reflect.Interface {",
+            "        if v.IsNil() {",
+            "            return nil, nil",
+            "        }",
+            "        v = v.Elem()",
+            "    }",
+            "    if v.Kind() == reflect.Ptr {",
+            "        if v.IsNil() {",
+            "            return nil, nil",
+            "        }",
+            "        if v.Elem().Kind() == reflect.Struct {",
+            "            // Only support returning object handles for structs defined in the same package as the request.",
+            "            rt := v.Elem().Type()",
+            "            if rt.PkgPath() == pkg {",
+                "                id := storeObj(pkg+\".\"+rt.Name(), v.Interface())",
+            "                return id, nil",
+            "            }",
+            "        }",
+            "    }",
+            "    av, ok := exportAny(v)",
+            "    if !ok {",
+            '        return nil, &ErrorObj{Type: "UnsupportedTypeError", Message: "unsupported return type"}',
+            "    }",
+            "    return av, nil",
             "}",
             "",
             "func init() {",
@@ -291,7 +461,27 @@ def write_bridge(
             "        mk := typeKey + \":\" + req.Method",
             "        mh := methodDispatch[mk]",
             "        if mh == nil {",
-            '            writeError(respPtr, respLen, "MethodNotFound", "method not found", map[string]any{\"type\": typeKey, \"method\": req.Method})',
+            "            // Unexported receiver types cannot be referenced from the bridge package, so we",
+            "            // fall back to reflection-based method invocation for them.",
+            "            if isExportedIdent(req.Type) {",
+            '                writeError(respPtr, respLen, "MethodNotFound", "method not found", map[string]any{\"type\": typeKey, \"method\": req.Method})',
+            "                return 0",
+            "            }",
+            "            var result any",
+            "            var errObj *ErrorObj",
+            "            func() {",
+            "                defer func() {",
+            "                    if r := recover(); r != nil {",
+            '                        errObj = &ErrorObj{Type: "GoPanicError", Message: "panic"}',
+            "                    }",
+            "                }()",
+            "                result, errObj = reflectCallMethod(req.Pkg, req.Type, ent.Obj, req.Method, req.Args)",
+            "            }()",
+            "            if errObj != nil {",
+            "                writeResp(respPtr, respLen, &Response{Ok: false, Error: errObj})",
+            "                return 0",
+            "            }",
+            "            writeResp(respPtr, respLen, &Response{Ok: true, Result: result})",
             "            return 0",
             "        }",
             "        var result any",
@@ -724,6 +914,26 @@ def _write_generic_wrapper(
             lines.append("    return v0, nil")
         else:
             lines.append("    return r0, nil")
+    lines.append("}")
+    return lines
+
+
+def _write_var_get_wrapper(*, wrap_name: str, alias: str, v: ExportedVar) -> list[str]:
+    base = v.type.strip()
+    if base.startswith("*"):
+        base = base[1:].strip()
+    lines: list[str] = []
+    lines.append(f"func {wrap_name}(args []any) (any, *ErrorObj) {{")
+    lines.append("    if len(args) != 0 {")
+    lines.append('        return nil, &ErrorObj{Type: "ABIError", Message: "wrong arity"}')
+    lines.append("    }")
+    # Store a pointer to the var when possible so pointer-receiver methods work.
+    if v.type.strip().startswith("*"):
+        lines.append(f"    obj := {alias}.{v.name}")
+    else:
+        lines.append(f"    obj := &{alias}.{v.name}")
+    lines.append(f'    id := storeObj("{v.pkg}.{base}", obj)')
+    lines.append("    return id, nil")
     lines.append("}")
     return lines
 
@@ -1561,6 +1771,22 @@ def _write_helpers(
             "        return out, true",
             "    }",
             "    switch t.Kind() {",
+            "    case reflect.Interface:",
+            "        if v == nil {",
+            "            return reflect.Zero(t), true",
+            "        }",
+            "        rv := reflect.ValueOf(v)",
+            "        if rv.Type().AssignableTo(t) {",
+            "            return rv, true",
+            "        }",
+            "        if rv.Type().ConvertibleTo(t) {",
+            "            return rv.Convert(t), true",
+            "        }",
+            "        // Empty interface: accept any value as-is.",
+            "        if t.NumMethod() == 0 {",
+            "            return rv, true",
+            "        }",
+            "        return reflect.Value{}, false",
             "    case reflect.Bool:",
             "        b, ok := toBool(v)",
             "        if !ok {",

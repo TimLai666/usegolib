@@ -147,6 +147,7 @@ class PackageHandle:
     package: str
     _client: SharedLibClient
     _schema: Schema | None = None
+    _var_cache: dict[str, "GoObject"] = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_manifest(cls, manifest: ArtifactManifest, *, package: str) -> "PackageHandle":
@@ -178,6 +179,39 @@ class PackageHandle:
         )
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
+        # Exported package variables can be used as namespace singletons (e.g. isr.DL.Of()).
+        # When schema declares a var, resolve it to an object handle so methods can be called.
+        if self._schema is not None:
+            vt = self._schema.vars_by_pkg.get(self.package, {}).get(name)
+            if vt is not None:
+                existing = self._var_cache.get(name)
+                if existing is not None:
+                    return existing
+
+                fn = f"__usegolib_getvar_{name}"
+                try:
+                    req = abi.encode_call_request(pkg=self.package, fn=fn, args=[])
+                except Exception as e:  # noqa: BLE001 - encode boundary
+                    raise ABIEncodeError(str(e)) from e
+
+                resp_bytes = self._client.call(req)
+                resp = abi.decode_response(resp_bytes)
+                if resp.ok:
+                    if not isinstance(resp.result, int) or isinstance(resp.result, bool):
+                        raise ABIDecodeError("getvar: expected integer object id")
+                    obj = GoObject(_pkg=self, _type=vt, _id=resp.result)
+                    self._var_cache[name] = obj
+                    return obj
+
+                err = resp.error
+                if err is None:
+                    raise ABIDecodeError("missing error object in failed response")
+                if err.type == "GoError":
+                    raise GoError(err.message)
+                if err.type == "GoPanicError":
+                    raise GoPanicError(err.message)
+                raise UseGoLibError(f"{err.type}: {err.message}")
+
         # Treat any missing attribute as a Go function call.
         def _call(*args: Any) -> Any:
             args_list = list(args)

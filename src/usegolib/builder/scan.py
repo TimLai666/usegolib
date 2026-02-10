@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from ..errors import BuildError
-from .symbols import ExportedFunc, ExportedMethod, GenericFuncDef, ModuleScan, StructField
+from .symbols import ExportedFunc, ExportedMethod, ExportedVar, GenericFuncDef, ModuleScan, StructField
 
 
 _GO_TRANSIENT_NET_RE = re.compile(
@@ -197,6 +197,27 @@ def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> Modul
                 )
             )
 
+        vars_: list[ExportedVar] = []
+        for item in obj.get("vars", []):
+            if not isinstance(item, dict):
+                continue
+            pkg = item.get("pkg")
+            name = item.get("name")
+            typ = item.get("type")
+            doc = item.get("doc")
+            if not (isinstance(pkg, str) and isinstance(name, str) and isinstance(typ, str)):
+                continue
+            if not pkg or not name or not typ:
+                continue
+            vars_.append(
+                ExportedVar(
+                    pkg=pkg,
+                    name=name,
+                    type=typ,
+                    doc=(doc.strip() or None) if isinstance(doc, str) else None,
+                )
+            )
+
         generic_funcs: list[GenericFuncDef] = []
         for item in obj.get("generic_funcs", []):
             if not isinstance(item, dict):
@@ -287,6 +308,7 @@ def scan_module(*, module_dir: Path, env: dict[str, str] | None = None) -> Modul
             funcs=funcs,
             methods=methods,
             generic_funcs=generic_funcs,
+            vars=vars_,
             struct_types_by_pkg=struct_types_by_pkg,
             structs_by_pkg=structs_by_pkg,
         )
@@ -334,31 +356,39 @@ type outFunc struct {
 	Doc     string   `json:"doc"`
 }
 
-type outMethod struct {
-	Pkg     string   `json:"pkg"`
-	Recv    string   `json:"recv"`
-	Name    string   `json:"name"`
-	Params  []string `json:"params"`
-	Results []string `json:"results"`
-	Doc     string   `json:"doc"`
-}
+ type outMethod struct {
+ 	Pkg     string   `json:"pkg"`
+ 	Recv    string   `json:"recv"`
+ 	Name    string   `json:"name"`
+ 	Params  []string `json:"params"`
+ 	Results []string `json:"results"`
+ 	Doc     string   `json:"doc"`
+ }
 
-type outGenericFunc struct {
-	Pkg        string   `json:"pkg"`
-	Name       string   `json:"name"`
-	TypeParams []string `json:"type_params"`
-	Params     []string `json:"params"`
-	Results    []string `json:"results"`
-	Doc        string   `json:"doc"`
-}
+ type outVar struct {
+ 	Pkg  string `json:"pkg"`
+ 	Name string `json:"name"`
+ 	Type string `json:"type"`
+ 	Doc  string `json:"doc"`
+ }
 
-type outObj struct {
-	Funcs []outFunc `json:"funcs"`
-	Methods []outMethod `json:"methods"`
-	GenericFuncs []outGenericFunc `json:"generic_funcs"`
-	StructTypes map[string][]string `json:"struct_types"`
-	Structs map[string][]outStruct `json:"structs"`
-}
+ type outGenericFunc struct {
+ 	Pkg        string   `json:"pkg"`
+ 	Name       string   `json:"name"`
+ 	TypeParams []string `json:"type_params"`
+ 	Params     []string `json:"params"`
+ 	Results    []string `json:"results"`
+ 	Doc        string   `json:"doc"`
+ }
+
+ type outObj struct {
+ 	Funcs []outFunc `json:"funcs"`
+ 	Methods []outMethod `json:"methods"`
+ 	GenericFuncs []outGenericFunc `json:"generic_funcs"`
+ 	Vars []outVar `json:"vars"`
+ 	StructTypes map[string][]string `json:"struct_types"`
+ 	Structs map[string][]outStruct `json:"structs"`
+ }
 
 type outStructField struct {
 	Name string `json:"name"`
@@ -395,14 +425,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	out := outObj{
-		Funcs:       make([]outFunc, 0, 128),
-		Methods:     make([]outMethod, 0, 128),
-		GenericFuncs: make([]outGenericFunc, 0, 128),
-		StructTypes: map[string][]string{},
-		Structs:     map[string][]outStruct{},
-	}
-	for _, p := range pkgs {
+ 	out := outObj{
+ 		Funcs:       make([]outFunc, 0, 128),
+ 		Methods:     make([]outMethod, 0, 128),
+ 		GenericFuncs: make([]outGenericFunc, 0, 128),
+ 		Vars:        make([]outVar, 0, 128),
+ 		StructTypes: map[string][]string{},
+ 		Structs:     map[string][]outStruct{},
+ 	}
+ 	for _, p := range pkgs {
 		if isInternalPkg(p.ImportPath) {
 			continue
 		}
@@ -426,11 +457,61 @@ func main() {
 			}
 			im := fileImports(af)
 			collectStructTypes(af, im, structNames, structFields)
-			for _, decl := range af.Decls {
-				fd, ok := decl.(*ast.FuncDecl)
-				if !ok {
-					continue
-				}
+ 			for _, decl := range af.Decls {
+ 				// Exported package-level vars (namespace-style singletons).
+ 				gd, ok := decl.(*ast.GenDecl)
+ 				if ok && gd.Tok == token.VAR {
+ 					for _, spec := range gd.Specs {
+ 						vs, ok := spec.(*ast.ValueSpec)
+ 						if !ok || vs == nil || len(vs.Names) == 0 {
+ 							continue
+ 						}
+ 						typ := ""
+ 						if vs.Type != nil {
+ 							typ = renderType(vs.Type, im)
+ 						} else if len(vs.Values) == 1 && vs.Values[0] != nil {
+ 							switch vv := vs.Values[0].(type) {
+ 							case *ast.CompositeLit:
+ 								typ = renderType(vv.Type, im)
+ 							case *ast.UnaryExpr:
+ 								if vv.Op == token.AND {
+ 									if cl, ok := vv.X.(*ast.CompositeLit); ok {
+ 										inner := renderType(cl.Type, im)
+ 										if inner != "" {
+ 											typ = "*" + inner
+ 										}
+ 									}
+ 								}
+ 							}
+ 						}
+ 						if typ == "" {
+ 							continue
+ 						}
+ 						doc := ""
+ 						if vs.Doc != nil {
+ 							doc = docText(vs.Doc)
+ 						} else if gd.Doc != nil {
+ 							doc = docText(gd.Doc)
+ 						}
+ 						for _, nm := range vs.Names {
+ 							if nm == nil || !nm.IsExported() {
+ 								continue
+ 							}
+ 							out.Vars = append(out.Vars, outVar{
+ 								Pkg:  p.ImportPath,
+ 								Name: nm.Name,
+ 								Type: typ,
+ 								Doc:  doc,
+ 							})
+ 						}
+ 					}
+ 					continue
+ 				}
+
+ 				fd, ok := decl.(*ast.FuncDecl)
+ 				if !ok {
+ 					continue
+ 				}
 				if fd.Name == nil || !fd.Name.IsExported() {
 					continue
 				}
@@ -493,13 +574,13 @@ func main() {
 				if rt == "" {
 					continue
 				}
-				recv := strings.TrimPrefix(rt, "*")
-				if recv == "" || !ast.IsExported(recv) {
-					continue
-				}
-				if !structNames[recv] {
-					continue
-				}
+ 				recv := strings.TrimPrefix(rt, "*")
+ 				if recv == "" {
+ 					continue
+ 				}
+ 				if !structNames[recv] {
+ 					continue
+ 				}
 
 				params := fieldListTypes(fd.Type.Params, im)
 				results := fieldListTypes(fd.Type.Results, im)
