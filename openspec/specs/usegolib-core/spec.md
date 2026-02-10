@@ -26,9 +26,16 @@ The system SHALL expose a Python API that imports a Go module or subpackage and 
 - **WHEN** Python calls `usegolib.import_("example.com/mod", version="v1.2.3", artifact_dir="out/")`
 - **THEN** the system MUST load version `v1.2.3` for that module/package (if present)
 
+#### Scenario: Import omits version but follows already-loaded module version
+- **WHEN** Python imports `example.com/mod` at version `v1.2.0`
+- **AND WHEN** Python imports `example.com/mod/subpkg` with `version=None`
+- **THEN** the second import resolves to version `v1.2.0` (the already-loaded module version)
+- **AND THEN** the import does not fail with `AmbiguousArtifactError` even if multiple artifact versions exist on disk
+
 #### Scenario: Import fails when version is omitted but ambiguous
 - **WHEN** Python calls `usegolib.import_("example.com/mod", version=None, artifact_dir="out/")`
 - **AND WHEN** `artifact_dir` contains more than one version for `example.com/mod` for the current OS/arch
+- **AND WHEN** `example.com/mod` is not already loaded in the current Python process
 - **THEN** the import MUST fail
 - **AND THEN** the system SHALL raise `AmbiguousArtifactError`
 

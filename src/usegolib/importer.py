@@ -54,6 +54,16 @@ def import_(
             suffix = "/".join(rel.parts)
             runtime_pkg = f"{resolved.module_path}/{suffix}"
 
+    # If the module is already loaded in this process, and the caller did not
+    # specify a version, follow the loaded version. This avoids raising
+    # AmbiguousArtifactError when multiple artifact versions exist on disk.
+    if version is None:
+        from .handle import _loaded_version_for_package
+
+        loaded = _loaded_version_for_package(runtime_pkg)
+        if loaded is not None:
+            version = loaded
+
     try:
         manifest = resolve_manifest(artifact_root, package=runtime_pkg, version=version)
     except ArtifactNotFoundError:

@@ -59,6 +59,36 @@ def test_import_raises_ambiguous_when_multiple_versions(tmp_path: Path):
         usegolib.import_("example.com/mod", artifact_dir=tmp_path)
 
 
+def test_import_omitted_version_follows_loaded_module_version(tmp_path: Path):
+    import usegolib
+
+    # Two artifacts for the same module, same platform, different versions.
+    _write_manifest(
+        tmp_path / "a",
+        module="example.com/mod",
+        version="v1.0.0",
+        packages=["example.com/mod", "example.com/mod/subpkg"],
+    )
+    _write_manifest(
+        tmp_path / "b",
+        module="example.com/mod",
+        version="v2.0.0",
+        packages=["example.com/mod", "example.com/mod/subpkg"],
+    )
+
+    # Load a specific version first.
+    h = usegolib.import_("example.com/mod", version="v2.0.0", artifact_dir=tmp_path)
+    assert h.version == "v2.0.0"
+
+    # Then omit version: should follow the already-loaded version (no ambiguity).
+    h2 = usegolib.import_("example.com/mod", artifact_dir=tmp_path)
+    assert h2.version == "v2.0.0"
+
+    # Subpackages should also follow the loaded module version.
+    hs = usegolib.import_("example.com/mod/subpkg", artifact_dir=tmp_path)
+    assert hs.version == "v2.0.0"
+
+
 def test_import_selects_requested_version(tmp_path: Path):
     import usegolib
 

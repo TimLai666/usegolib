@@ -43,6 +43,23 @@ class _Runtime:
 _LOADED_RUNTIMES: dict[str, _Runtime] = {}
 
 
+def _loaded_version_for_package(pkg: str) -> str | None:
+    """Return the already-loaded module version for `pkg` (module or subpackage).
+
+    This allows `import_(..., version=None)` for subpackages to follow the already
+    loaded module version in the current process, avoiding ambiguity when multiple
+    artifact versions exist on disk.
+    """
+    best_key = None
+    for mod in _LOADED_RUNTIMES.keys():
+        if pkg == mod or pkg.startswith(mod + "/"):
+            if best_key is None or len(mod) > len(best_key):
+                best_key = mod
+    if best_key is None:
+        return None
+    return _LOADED_RUNTIMES[best_key].version
+
+
 def _pack_variadic_args(*, params: list[str], args: list[Any]) -> list[Any]:
     """Pack Python varargs for Go variadic parameters.
 
