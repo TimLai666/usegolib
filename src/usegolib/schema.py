@@ -322,7 +322,14 @@ def _validate_value(*, schema: Schema, pkg: str, t: str, v: Any) -> None:
     if t.startswith("*"):
         if v is None:
             return
-        _validate_value(schema=schema, pkg=pkg, t=t[1:].strip(), v=v)
+        inner = t[1:].strip()
+        # Opaque pointer handles: if the pointed-to struct exists in schema but has
+        # no exported fields, allow passing/returning a uint64-ish object id (int).
+        st = schema.structs_by_pkg.get(pkg, {}).get(inner)
+        if st is not None and not st.fields_by_name:
+            if isinstance(v, int) and not isinstance(v, bool):
+                return
+        _validate_value(schema=schema, pkg=pkg, t=inner, v=v)
         return
 
     if t.startswith("..."):

@@ -13,10 +13,12 @@ def write_bridge(
     methods: list[ExportedMethod] | None = None,
     generic_instantiations: list[GenericInstantiation] | None = None,
     struct_types_by_pkg: dict[str, set[str]] | None = None,
+    opaque_struct_types_by_pkg: dict[str, set[str]] | None = None,
     adapter_types: set[str] | None = None,
 ) -> None:
     # Generate a single `main` package for `-buildmode=c-shared`.
     struct_types_by_pkg = struct_types_by_pkg or {}
+    opaque_struct_types_by_pkg = opaque_struct_types_by_pkg or {}
     methods = methods or []
     generic_instantiations = generic_instantiations or []
     adapter_types = adapter_types or set()
@@ -51,6 +53,7 @@ def write_bridge(
 
         func_reg_lines.append(f'        "{key}": {wrap_name},')
         struct_types = struct_types_by_pkg.get(fn.pkg, set())
+        opaque_struct_types = opaque_struct_types_by_pkg.get(fn.pkg, set())
         if any(_base_type(t) in struct_types for t in fn.params) or any(
             _base_type(t) in struct_types for t in fn.results
         ):
@@ -65,6 +68,7 @@ def write_bridge(
                 alias=alias,
                 fn=fn,
                 struct_types=struct_types,
+                opaque_struct_types=opaque_struct_types,
             )
         )
         wrap_lines.append("")
@@ -76,12 +80,14 @@ def write_bridge(
 
         func_reg_lines.append(f'        "{key}": {wrap_name},')
         struct_types = struct_types_by_pkg.get(gi.pkg, set())
+        opaque_struct_types = opaque_struct_types_by_pkg.get(gi.pkg, set())
         wrap_lines.extend(
             _write_generic_wrapper(
                 wrap_name=wrap_name,
                 alias=alias,
                 gi=gi,
                 struct_types=struct_types,
+                opaque_struct_types=opaque_struct_types,
             )
         )
         wrap_lines.append("")
@@ -96,6 +102,7 @@ def write_bridge(
         method_reg_lines.append(f'        "{method_key}": {wrap_name},')
 
         struct_types = struct_types_by_pkg.get(m.pkg, set())
+        opaque_struct_types = opaque_struct_types_by_pkg.get(m.pkg, set())
         if any(_base_type(t) in struct_types for t in m.params) or any(
             _base_type(t) in struct_types for t in m.results
         ):
@@ -110,6 +117,7 @@ def write_bridge(
                 alias=alias,
                 m=m,
                 struct_types=struct_types,
+                opaque_struct_types=opaque_struct_types,
             )
         )
         wrap_lines.append("")
@@ -178,9 +186,17 @@ def write_bridge(
             "var objMu sync.RWMutex",
             "var objByID = map[uint64]ObjEntry{}",
             "",
+            "func storeObj(typeKey string, obj any) uint64 {",
+            "    id := atomic.AddUint64(&objNext, 1)",
+            "    objMu.Lock()",
+            "    objByID[id] = ObjEntry{Key: typeKey, Obj: obj}",
+            "    objMu.Unlock()",
+            "    return id",
+            "}",
+            "",
             "func init() {",
             "    dispatch = map[string]Handler{",
-            *func_reg_lines,
+                *func_reg_lines,
             "    }",
             "    methodDispatch = map[string]MethodHandler{",
             *method_reg_lines,
@@ -256,10 +272,7 @@ def write_bridge(
             "        pv.Elem().Set(sv)",
             "        obj := pv.Interface()",
             "",
-            "        id := atomic.AddUint64(&objNext, 1)",
-            "        objMu.Lock()",
-            "        objByID[id] = ObjEntry{Key: typeKey, Obj: obj}",
-            "        objMu.Unlock()",
+            "        id := storeObj(typeKey, obj)",
             "        writeResp(respPtr, respLen, &Response{Ok: true, Result: id})",
             "        return 0",
             '    case "obj_call":',
@@ -386,6 +399,7 @@ def _write_wrapper(
     alias: str,
     fn: ExportedFunc,
     struct_types: set[str],
+    opaque_struct_types: set[str],
 ) -> list[str]:
     # Only support a small set of v0 types.
     lines: list[str] = []
@@ -419,9 +433,19 @@ def _write_wrapper(
         lines.append("    return nil, nil")
     elif len(fn.results) == 1:
         lines.append(f"    r0 := {call}")
-        if _base_type(fn.results[0]) == "any" or _base_type(fn.results[0]) in struct_types or _base_type(
-            fn.results[0]
-        ) in {
+        t0 = fn.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{fn.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) == "any" or _base_type(t0) in struct_types or _base_type(t0) in {  # noqa: PLR1714
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -441,7 +465,19 @@ def _write_wrapper(
         lines.append("    if err != nil {")
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
-        if _base_type(fn.results[0]) in struct_types or _base_type(fn.results[0]) in {
+        t0 = fn.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{fn.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) in struct_types or _base_type(t0) in {
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -466,6 +502,7 @@ def _write_method_wrapper(
     alias: str,
     m: ExportedMethod,
     struct_types: set[str],
+    opaque_struct_types: set[str],
 ) -> list[str]:
     lines: list[str] = []
     recv_go = f"*{alias}.{m.recv}"
@@ -501,9 +538,19 @@ def _write_method_wrapper(
         lines.append("    return nil, nil")
     elif len(m.results) == 1:
         lines.append(f"    r0 := {call}")
-        if _base_type(m.results[0]) == "any" or _base_type(m.results[0]) in struct_types or _base_type(
-            m.results[0]
-        ) in {
+        t0 = m.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{m.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) == "any" or _base_type(t0) in struct_types or _base_type(t0) in {  # noqa: PLR1714
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -522,7 +569,19 @@ def _write_method_wrapper(
         lines.append("    if err != nil {")
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
-        if _base_type(m.results[0]) in struct_types or _base_type(m.results[0]) in {
+        t0 = m.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{m.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) in struct_types or _base_type(t0) in {
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -547,6 +606,7 @@ def _write_generic_wrapper(
     alias: str,
     gi: GenericInstantiation,
     struct_types: set[str],
+    opaque_struct_types: set[str],
 ) -> list[str]:
     lines: list[str] = []
     lines.append(f"func {wrap_name}(args []any) (any, *ErrorObj) {{")
@@ -580,9 +640,19 @@ def _write_generic_wrapper(
         lines.append("    return nil, nil")
     elif len(gi.results) == 1:
         lines.append(f"    r0 := {call}")
-        if _base_type(gi.results[0]) == "any" or _base_type(gi.results[0]) in struct_types or _base_type(
-            gi.results[0]
-        ) in {
+        t0 = gi.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{gi.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) == "any" or _base_type(t0) in struct_types or _base_type(t0) in {  # noqa: PLR1714
             "time.Time",
             "time.Duration",
             "uuid.UUID",
@@ -601,7 +671,19 @@ def _write_generic_wrapper(
         lines.append("    if err != nil {")
         lines.append('        return nil, &ErrorObj{Type: "GoError", Message: err.Error()}')
         lines.append("    }")
-        if _base_type(gi.results[0]) in struct_types or _base_type(gi.results[0]) in {
+        t0 = gi.results[0].strip()
+        opaque_ptr = None
+        if t0.startswith("*"):
+            inner = t0[1:].strip()
+            if inner and not inner.startswith(("[]", "map[string]", "...", "*")) and inner in opaque_struct_types:
+                opaque_ptr = inner
+        if opaque_ptr is not None:
+            lines.append("    if r0 == nil {")
+            lines.append("        return nil, nil")
+            lines.append("    }")
+            lines.append(f'    id := storeObj("{gi.pkg}.{opaque_ptr}", r0)')
+            lines.append("    return id, nil")
+        elif _base_type(t0) in struct_types or _base_type(t0) in {
             "time.Time",
             "time.Duration",
             "uuid.UUID",

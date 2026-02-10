@@ -71,6 +71,27 @@ def _pack_variadic_args(*, params: list[str], args: list[Any]) -> list[Any]:
     return [*args[:fixed], tail]
 
 
+def _opaque_ptr_target(*, schema: Schema, pkg: str, go_type: str) -> str | None:
+    """If go_type is `*T` for an opaque struct T, return `T` else None.
+
+    Opaque structs are represented in the manifest schema as struct entries with
+    zero exported fields. For pointers to those structs, the runtime uses object
+    handles (uint64 ids) instead of record dicts.
+    """
+    t = go_type.strip()
+    if not t.startswith("*"):
+        return None
+    inner = t[1:].strip()
+    if not inner or inner.startswith(("[]", "map[string]", "...", "*")):
+        return None
+    st = schema.structs_by_pkg.get(pkg, {}).get(inner)
+    if st is None:
+        return None
+    if st.fields_by_name:
+        return None
+    return inner
+
+
 @dataclass
 class PackageHandle:
     module: str
@@ -113,11 +134,14 @@ class PackageHandle:
         # Treat any missing attribute as a Go function call.
         def _call(*args: Any) -> Any:
             args_list = list(args)
+            result_go_type: str | None = None
             if self._schema is not None:
                 sig = self._schema.symbols_by_pkg.get(self.package, {}).get(name)
                 if sig is not None:
                     params, _results = sig
                     args_list = _pack_variadic_args(params=params, args=args_list)
+                    if _results:
+                        result_go_type = _results[0]
 
                 # Allow passing generated dataclasses; encode them to record-struct dicts first.
                 from .typed import encode_value
@@ -141,6 +165,16 @@ class PackageHandle:
                         fn=name,
                         result=resp.result,
                     )
+                    if result_go_type is not None:
+                        type_name = _opaque_ptr_target(
+                            schema=self._schema, pkg=self.package, go_type=result_go_type
+                        )
+                        if type_name is not None:
+                            if not isinstance(resp.result, int) or isinstance(resp.result, bool):
+                                raise ABIDecodeError(
+                                    f"expected integer object id for opaque pointer result {result_go_type}"
+                                )
+                            return GoObject(_pkg=self, _type=type_name, _id=resp.result)
                 return resp.result
 
             err = resp.error
@@ -369,6 +403,7 @@ class GoObject:
                 raise UseGoLibError("object is closed")
             args_list = list(args)
             schema = self._pkg._schema  # noqa: SLF001 - internal linkage
+            result_go_type: str | None = None
             if schema is not None:
                 sig = (
                     schema.methods_by_pkg.get(self._pkg.package, {})
@@ -378,6 +413,8 @@ class GoObject:
                 if sig is not None:
                     params, _results = sig
                     args_list = _pack_variadic_args(params=params, args=args_list)
+                    if _results:
+                        result_go_type = _results[0]
 
                 from .typed import encode_value
 
@@ -411,6 +448,16 @@ class GoObject:
                         method=name,
                         result=resp.result,
                     )
+                    if result_go_type is not None:
+                        type_name = _opaque_ptr_target(
+                            schema=schema, pkg=self._pkg.package, go_type=result_go_type
+                        )
+                        if type_name is not None:
+                            if not isinstance(resp.result, int) or isinstance(resp.result, bool):
+                                raise ABIDecodeError(
+                                    f"expected integer object id for opaque pointer result {result_go_type}"
+                                )
+                            return GoObject(_pkg=self._pkg, _type=type_name, _id=resp.result)
                 return resp.result
 
             err = resp.error

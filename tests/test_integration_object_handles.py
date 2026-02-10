@@ -61,6 +61,24 @@ def _write_go_test_module(mod_dir: Path) -> None:
                 "    return c.N, nil",
                 "}",
                 "",
+                "// Opaque struct: no exported fields. Returned pointers should become object handles.",
+                "type Opaque struct {",
+                "    n int64",
+                "}",
+                "",
+                "func NewOpaque() *Opaque {",
+                "    return &Opaque{n: 1}",
+                "}",
+                "",
+                "func (o *Opaque) Inc(delta int64) int64 {",
+                "    o.n += delta",
+                "    return o.n",
+                "}",
+                "",
+                "func (o *Opaque) Self() *Opaque {",
+                "    return o",
+                "}",
+                "",
             ]
         ),
         encoding="utf-8",
@@ -114,3 +132,13 @@ def test_object_handles(tmp_path: Path):
         assert tc.AddReq(types.AddReq(Delta=2)) == 13
         snap = tc.Snapshot()
         assert snap == types.Snapshot(N=13)
+
+    # Opaque pointer returns should be callable objects, not empty dicts.
+    o = h.NewOpaque()
+    assert o.type_name == "Opaque"
+    assert o.Inc(2) == 3
+    o2 = o.Self()
+    assert o2.type_name == "Opaque"
+    assert o2.Inc(1) == 4
+    o.close()
+    o2.close()

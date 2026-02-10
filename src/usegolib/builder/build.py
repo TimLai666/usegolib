@@ -400,6 +400,18 @@ def build_artifact(
                     if "uuid.UUID" in f.type:
                         adapter_types.add("uuid.UUID")
 
+        # Struct types discovered in the package, but with no exported fields in the
+        # schema. For pointers to these types, we treat values as opaque object
+        # handles (uint64 ids), so the returned value remains callable in Python.
+        opaque_struct_types_by_pkg: dict[str, set[str]] = {}
+        all_pkgs = set(scan.struct_types_by_pkg.keys()) | set(scan.structs_by_pkg.keys())
+        for pkg in all_pkgs:
+            all_structs = set(scan.struct_types_by_pkg.get(pkg, set()))
+            with_fields = set(scan.structs_by_pkg.get(pkg, {}).keys())
+            opaque = all_structs - with_fields
+            if opaque:
+                opaque_struct_types_by_pkg[pkg] = opaque
+
         write_bridge(
             bridge_dir=bridge_dir,
             module_path=module_path,
@@ -407,6 +419,7 @@ def build_artifact(
             methods=methods,
             generic_instantiations=generic_insts,
             struct_types_by_pkg=scan.struct_types_by_pkg,
+            opaque_struct_types_by_pkg=opaque_struct_types_by_pkg,
             adapter_types=adapter_types,
         )
 
